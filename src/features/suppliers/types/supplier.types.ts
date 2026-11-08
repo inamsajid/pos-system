@@ -1,0 +1,9 @@
+export type SupplierStatus='active'|'inactive'|'archived'
+export type SupplierType='individual'|'business'
+export interface Supplier{id:string;supplierCode:string;name:string;type:SupplierType;companyName?:string;contactPerson?:string;phone?:string;alternatePhone?:string;email?:string;taxNumber?:string;address?:string;city?:string;country?:string;notes?:string;status:SupplierStatus;createdAt:string;updatedAt:string}
+export type SupplierDraft=Omit<Supplier,'id'|'supplierCode'|'createdAt'|'updatedAt'>
+export interface SupplierFinancialSummary{supplierId:string;totalPurchases:number;totalPaid:number;outstandingPayable:number;advanceBalance:number;openingPayable:number;lastPurchaseDate?:string;currentAccountBalance?:number}
+export interface SupplierProductAssociation{id:string;supplierId:string;productId:string;supplierSku?:string;purchasePrice?:number;isPreferred:boolean;createdAt:string}
+export interface SupplierPurchase{id:string;supplierId:string;reference:string;date:string;items:number;totalAmount:number;paidAmount:number;status:'paid'|'partial'|'unpaid'}
+export interface SupplierPayment{id:string;supplierId:string;reference:string;date:string;method:string;amount:number;purchaseReference:string;status:'completed'|'pending'}
+export interface SupplierTransaction{id:string;supplierId:string;date:string;reference:string;description:string;debit:number;credit:number;balance:number}

@@ -1,0 +1,29 @@
+import { useState } from 'react'
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { formatCurrency } from '../../../lib/currency'
+import { getTrend, paymentMethodTotals } from '../services/reportService'
+import type { DateRange, ReportDataset } from '../types/report.types'
+import { ReportChartCard } from './ReportChartCard'
+
+const colors = ['#2563eb','#14b8a6','#f59e0b','#8b5cf6','#f43f5e','#64748b']
+const moneyTick = (value: number) => value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 1000 ? `${(value / 1000).toFixed(0)}k` : String(value)
+export function SalesTrendChart({ sales, payments, range, title = 'Sales and collections trend' }: { sales: ReportDataset['sales']; payments: ReportDataset['payments']; range: DateRange; title?: string }) {
+  const [granularity, setGranularity] = useState<'daily'|'weekly'|'monthly'|'yearly'>('daily')
+  const trend = getTrend(sales, payments, range, granularity)
+  return <ReportChartCard title={title} subtitle="Sales are net completed invoices; collections include POS and later posted customer payments."><div className="mb-2 flex justify-end"><select aria-label="Trend interval" value={granularity} onChange={event => setGranularity(event.target.value as typeof granularity)} className="rounded border border-slate-200 p-1.5 text-xs"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></div><div className="h-[280px] w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={20} /><YAxis tickFormatter={moneyTick} tick={{ fontSize: 10 }} width={48} /><Tooltip formatter={(value, name) => [formatCurrency(Number(value)), name === 'sales' ? 'Net sales' : 'Collections']} /><Legend formatter={value => value === 'sales' ? 'Net sales' : 'Collections'} /><Line type="monotone" dataKey="sales" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="collections" stroke="#14b8a6" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div></ReportChartCard>
+}
+export function OrderVolumeChart({ sales, range }: { sales: ReportDataset['sales']; range: DateRange }) {
+  const trend = getTrend(sales, [], range)
+  return <ReportChartCard title="Order volume" subtitle="Completed transactions per business day."><div className="h-[280px] w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={trend} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={20} /><YAxis allowDecimals={false} tick={{ fontSize: 10 }} width={36} /><Tooltip formatter={value => [Number(value).toLocaleString(), 'Orders']} /><Bar dataKey="orders" name="Orders" fill="#8b5cf6" radius={[4,4,0,0]} /></BarChart></ResponsiveContainer></div></ReportChartCard>
+}
+export function PaymentDonut({ payments, title = 'Collections by payment method' }: { payments: ReportDataset['payments']; title?: string }) {
+  const data = paymentMethodTotals(payments)
+  return <ReportChartCard title={title} subtitle="Only posted payment transactions; unpaid credit is excluded."><div className="h-[260px] w-full">{data.length ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={data} dataKey="value" nameKey="method" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>{data.map((entry, index) => <Cell key={entry.method} fill={colors[index % colors.length]} />)}</Pie><Tooltip formatter={value => formatCurrency(Number(value))} /><Legend formatter={value => String(value).replaceAll('_',' ')} /></PieChart></ResponsiveContainer> : <div className="grid h-full place-items-center text-sm text-slate-500">No collections in this period.</div>}</div></ReportChartCard>
+}
+export function RankingChart({ title, data, dataKey, nameKey = 'name', valueLabel = 'Value' }: { title: string; data: Array<Record<string, string | number>>; dataKey: string; nameKey?: string; valueLabel?: string }) {
+  return <ReportChartCard title={title}><div className="h-[300px] w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.slice(0,10)} layout="vertical" margin={{ top: 4, right: 14, left: 0, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" tickFormatter={moneyTick} tick={{ fontSize: 10 }} /><YAxis type="category" dataKey={nameKey} width={112} tick={{ fontSize: 10 }} /><Tooltip formatter={value => [valueLabel.toLowerCase().includes('sales')||valueLabel.toLowerCase().includes('revenue')||valueLabel.toLowerCase().includes('purchase')?formatCurrency(Number(value)):Number(value).toLocaleString(),valueLabel]} /><Bar dataKey={dataKey} name={valueLabel} fill="#2563eb" radius={[0,5,5,0]} /></BarChart></ResponsiveContainer></div></ReportChartCard>
+}
+
+export function SimpleSalesBars({ data, title }: { data: Array<{ name: string; value: number }>; title: string }) {
+  return <ReportChartCard title={title}><div className="h-[260px] w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.slice(0,10)} margin={{ top: 8, right: 10, left: 2, bottom: 35 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="name" interval={0} angle={-25} textAnchor="end" tick={{ fontSize: 9 }} /><YAxis tickFormatter={moneyTick} tick={{ fontSize: 10 }} width={45} /><Tooltip formatter={value => formatCurrency(Number(value))} /><Bar dataKey="value" name="Sales" fill="#2563eb" radius={[5,5,0,0]} /></BarChart></ResponsiveContainer></div></ReportChartCard>
+}

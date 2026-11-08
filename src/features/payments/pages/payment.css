@@ -1,0 +1,16 @@
+@media print {
+  body * { visibility: hidden !important; }
+  .payment-receipt-content,
+  .payment-receipt-content * { visibility: visible !important; }
+  .payment-receipt-content {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 190mm !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 12mm !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: #000 !important;
+  }
+}

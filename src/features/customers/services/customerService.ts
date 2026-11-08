@@ -1,0 +1,16 @@
+import { customerMockData, financialMockData, invoiceMockData, paymentMockData, accountMockData } from '../data/customerMockData'
+import type { Customer, CustomerDraft, CustomerFinancialSummary, CustomerInvoice, CustomerPayment, AccountTransaction } from '../types/customer.types'
+let customers=[...customerMockData]
+export const customerService={
+ async getCustomers(){return customers.map(c=>({...c}))},
+ async getCustomerById(id:string){const c=customers.find(x=>x.id===id);return c?{...c}:undefined},
+ async createCustomer(draft:CustomerDraft){validate(draft);const now=new Date().toISOString();const n=Math.max(1000,...customers.map(c=>Number(c.customerCode.match(/\d+$/)?.[0]??0)))+1;const c:Customer={...draft,id:globalThis.crypto?.randomUUID?.()??`cus-${Date.now()}`,customerCode:`CUS-${n}`,createdAt:now,updatedAt:now};customers=[c,...customers];return {...c}},
+ async updateCustomer(id:string,draft:CustomerDraft){const old=customers.find(c=>c.id===id);if(!old)throw Error('Customer not found.');if(old.isWalkIn)throw Error('Walk-in Customer details are protected.');validate(draft,id);const c={...old,...draft,updatedAt:new Date().toISOString()};customers=customers.map(x=>x.id===id?c:x);return {...c}},
+ async updateCustomerStatus(id:string,status:'active'|'inactive'){const old=customers.find(c=>c.id===id);if(!old)throw Error('Customer not found.');if(old.isWalkIn&&status!=='active')throw Error('Walk-in Customer must remain active.');const c={...old,status,updatedAt:new Date().toISOString()};customers=customers.map(x=>x.id===id?c:x);return {...c}},
+ async archiveCustomer(id:string){const old=customers.find(c=>c.id===id);if(!old)throw Error('Customer not found.');if(old.isWalkIn)throw Error('Walk-in Customer cannot be archived.');const c={...old,status:'archived' as const,updatedAt:new Date().toISOString()};customers=customers.map(x=>x.id===id?c:x);return {...c}},
+ async getCustomerFinancialSummary(id:string):Promise<CustomerFinancialSummary>{return financialMockData.find(f=>f.customerId===id)??{customerId:id,totalPurchases:0,totalPaid:0,outstandingBalance:0,advanceBalance:0,openingBalance:0}},
+ async getCustomerPurchaseHistory(id:string):Promise<CustomerInvoice[]>{return invoiceMockData.filter(x=>x.customerId===id).map(x=>({...x}))},
+ async getCustomerPaymentHistory(id:string):Promise<CustomerPayment[]>{return paymentMockData.filter(x=>x.customerId===id).map(x=>({...x}))},
+ async getCustomerAccountTransactions(id:string):Promise<AccountTransaction[]>{return accountMockData.filter(x=>x.customerId===id).map(x=>({...x}))},
+}
+function validate(d:CustomerDraft,excluded?:string){const name=d.name.trim().toLowerCase();if(customers.some(c=>c.id!==excluded&&c.name.trim().toLowerCase()===name))throw Error('A customer with this name already exists.');if(d.phone?.trim()&&customers.some(c=>c.id!==excluded&&c.phone?.replace(/\D/g,'')===d.phone?.replace(/\D/g,'')))throw Error('This phone number is already in use.');if(d.email?.trim()&&customers.some(c=>c.id!==excluded&&c.email?.trim().toLowerCase()===d.email?.trim().toLowerCase()))throw Error('This email address is already in use.');if(d.taxNumber?.trim()&&customers.some(c=>c.id!==excluded&&c.taxNumber?.trim().toLowerCase()===d.taxNumber?.trim().toLowerCase()))throw Error('This tax number is already in use.')}

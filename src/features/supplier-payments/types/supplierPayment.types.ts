@@ -1,0 +1,5 @@
+export type SupplierPaymentMethod = 'cash' | 'bank_transfer' | 'card' | 'other'
+export interface SupplierPaymentAllocation { purchaseId: string; purchaseNumber: string; amount: number }
+export interface SupplierPayment { id: string; requestId?: string; receiptNumber: string; supplierId: string; supplierSnapshot: { name: string; supplierCode: string; companyName?: string }; amount: number; methodBreakdown: Array<{ id: string; method: SupplierPaymentMethod; amount: number; reference?: string }>; allocations: SupplierPaymentAllocation[]; unallocatedAmount: number; paidAt: string; paidBy: string; notes?: string; createdAt: string }
+export interface SupplierPaymentDraft { requestId?: string; supplierId: string; amount: number; paidAt: string; methodBreakdown: SupplierPayment['methodBreakdown']; allocations: SupplierPaymentAllocation[]; keepAsAdvance: boolean; notes?: string }
+export interface OutstandingPurchase { purchaseId: string; purchaseNumber: string; supplierInvoiceNumber?: string; date: string; supplierId: string; supplierName: string; totalAmount: number; amountPaid: number; outstanding: number }

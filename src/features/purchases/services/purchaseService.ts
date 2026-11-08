@@ -1,0 +1,121 @@
+import { productService } from '../../products/services/productService'
+import { supplierService } from '../../suppliers/services/supplierService'
+import { getProductStock, recordStockChanges } from '../../inventory/services/inventoryService'
+import { money } from '../../pos/utils/checkoutCalculations'
+import type { GoodsReceipt, Purchase, PurchaseDraft } from '../types/purchase.types'
+
+const PURCHASES_KEY = 'northstar.purchases.v1'
+const RECEIPTS_KEY = 'northstar.goods-receipts.v1'
+function load<T>(key: string): T[] { try { const value: unknown = JSON.parse(localStorage.getItem(key) ?? '[]'); return Array.isArray(value) ? value as T[] : [] } catch { return [] } }
+let purchases = load<Purchase>(PURCHASES_KEY)
+let receipts = load<GoodsReceipt>(RECEIPTS_KEY)
+function save() { try { localStorage.setItem(PURCHASES_KEY, JSON.stringify(purchases)); localStorage.setItem(RECEIPTS_KEY, JSON.stringify(receipts)) } catch { /* Keep this mock repository usable when browser storage is unavailable. */ } }
+function id() { return globalThis.crypto?.randomUUID?.() ?? `pur-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
+function copyPurchase(p: Purchase): Purchase { return { ...p, supplierSnapshot: { ...p.supplierSnapshot }, items: p.items.map(item => ({ ...item, productSnapshot: { ...item.productSnapshot } })) } }
+function copyReceipt(r: GoodsReceipt): GoodsReceipt { return { ...r, supplierSnapshot: { ...r.supplierSnapshot }, items: r.items.map(item => ({ ...item, productSnapshot: { ...item.productSnapshot } })) } }
+function find(idValue: string) { const purchase = purchases.find(p => p.id === idValue); if (!purchase) throw new Error('Purchase not found.'); return purchase }
+function numberFor(purchaseId: string) { return `PO-${new Date().getFullYear()}-${purchaseId.replace(/[^a-z0-9]/gi, '').slice(-8).toUpperCase()}` }
+
+async function buildPurchase(draft: PurchaseDraft, existing?: Purchase): Promise<Purchase> {
+  if (!draft.supplierId) throw new Error('Select a supplier.')
+  const supplier = await supplierService.getSupplierById(draft.supplierId)
+  if (!supplier || supplier.status !== 'active') throw new Error('Select an active supplier.')
+  if (!draft.items.length) throw new Error('Add at least one product to this purchase.')
+  if ((draft.taxAmount ?? 0) !== 0) throw new Error('Tax is not configured. Set tax to zero for this purchase.')
+  const catalog = await productService.getProducts()
+  const items = draft.items.map(item => {
+    const product = catalog.find(p => p.id === item.productId)
+    if (!product || product.status !== 'active') throw new Error('Only active products can be added to purchases.')
+    if (!Number.isFinite(item.orderedQuantity) || item.orderedQuantity <= 0) throw new Error(`Enter a valid quantity for ${product.name}.`)
+    if (!Number.isFinite(item.unitCost) || item.unitCost < 0) throw new Error(`Enter a valid purchase cost for ${product.name}.`)
+    const lineBeforeDiscount = money(item.orderedQuantity * item.unitCost)
+    const discountAmount = money(item.discountAmount ?? 0)
+    if (!Number.isFinite(discountAmount) || discountAmount < 0 || discountAmount > lineBeforeDiscount) throw new Error(`Check the discount for ${product.name}.`)
+    return { id: existing?.items.find(old => old.productId === product.id)?.id ?? id(), productId: product.id, productSnapshot: { name: product.name, sku: product.sku, unit: product.unit, categoryId: product.categoryId }, orderedQuantity: item.orderedQuantity, receivedQuantity: existing?.items.find(old => old.productId === product.id)?.receivedQuantity ?? 0, unitCost: money(item.unitCost), discountAmount, lineTotal: money(lineBeforeDiscount - discountAmount) }
+  })
+  if (new Set(items.map(item => item.productId)).size !== items.length) throw new Error('Each product can appear only once. Update the existing line quantity instead.')
+  const subtotal = money(items.reduce((sum, item) => sum + item.lineTotal, 0))
+  const discountAmount = money(draft.discountAmount ?? 0)
+  if (!Number.isFinite(discountAmount) || discountAmount < 0 || discountAmount > subtotal) throw new Error('Purchase discount cannot exceed the subtotal.')
+  const now = new Date().toISOString()
+  const purchaseId = existing?.id ?? id()
+  return {
+    id: purchaseId, purchaseNumber: existing?.purchaseNumber ?? numberFor(purchaseId), supplierId: supplier.id,
+    supplierSnapshot: { name: supplier.name, supplierCode: supplier.supplierCode, companyName: supplier.companyName },
+    supplierInvoiceNumber: draft.supplierInvoiceNumber?.trim() || undefined, items, subtotal,
+    discountAmount, taxAmount: 0, totalAmount: money(subtotal - discountAmount), status: existing?.status ?? 'draft',
+    purchaseDate: draft.purchaseDate, expectedDeliveryDate: draft.expectedDeliveryDate || undefined,
+    notes: draft.notes?.trim() || undefined, createdAt: existing?.createdAt ?? now, updatedAt: now, confirmedAt: existing?.confirmedAt,
+  }
+}
+
+export function getPurchases() { return purchases.map(copyPurchase).sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate) || b.createdAt.localeCompare(a.createdAt)) }
+export function getPurchaseById(purchaseId: string) { const purchase = purchases.find(p => p.id === purchaseId); return purchase ? copyPurchase(purchase) : undefined }
+export function getGoodsReceipts(purchaseId?: string) { return receipts.filter(r => !purchaseId || r.purchaseId === purchaseId).map(copyReceipt).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)) }
+export function getGoodsReceiptById(receiptId: string) { const receipt = receipts.find(r => r.id === receiptId); return receipt ? copyReceipt(receipt) : undefined }
+
+export async function createPurchaseDraft(draft: PurchaseDraft) {
+  const purchase = await buildPurchase({ ...draft, taxAmount: 0 })
+  purchases = [purchase, ...purchases]; save(); return copyPurchase(purchase)
+}
+export async function updatePurchaseDraft(purchaseId: string, draft: PurchaseDraft) {
+  const existing = find(purchaseId)
+  if (existing.status !== 'draft') throw new Error('Only draft purchases can be edited.')
+  const updated = await buildPurchase({ ...draft, taxAmount: 0 }, existing)
+  purchases = purchases.map(p => p.id === purchaseId ? updated : p); save(); return copyPurchase(updated)
+}
+export function confirmPurchase(purchaseId: string) {
+  const existing = find(purchaseId)
+  if (existing.status !== 'draft') throw new Error('Only draft purchases can be confirmed.')
+  if (!existing.items.length || existing.totalAmount <= 0) throw new Error('Add purchase items with a non-zero total before confirming.')
+  const updated = { ...existing, status: 'ordered' as const, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+  purchases = purchases.map(p => p.id === purchaseId ? updated : p); save(); return copyPurchase(updated)
+}
+export function cancelPurchase(purchaseId: string) {
+  const existing = find(purchaseId)
+  if (!['draft', 'ordered'].includes(existing.status) || existing.items.some(item => item.receivedQuantity > 0)) throw new Error('A purchase cannot be cancelled after receipt or after completion.')
+  const updated = { ...existing, status: 'cancelled' as const, updatedAt: new Date().toISOString() }
+  purchases = purchases.map(p => p.id === purchaseId ? updated : p); save(); return copyPurchase(updated)
+}
+
+export async function createGoodsReceipt(purchaseId: string, quantities: Record<string, number>, notes: string, requestId: string) {
+  const previousReceipt = receipts.find(receipt => receipt.requestId === requestId)
+  if (previousReceipt) return copyReceipt(previousReceipt)
+  const purchase = find(purchaseId)
+  if (!['ordered', 'partially_received'].includes(purchase.status)) throw new Error('Only confirmed purchases can receive goods.')
+  const lines = purchase.items.map(item => ({ item, received: quantities[item.id] ?? 0 })).filter(line => line.received > 0)
+  if (!lines.length) throw new Error('Enter a quantity for at least one purchase item.')
+  for (const { item, received } of lines) {
+    const remaining = item.orderedQuantity - item.receivedQuantity
+    if (!Number.isFinite(received) || received < 0 || received > remaining) throw new Error(`${item.productSnapshot.name} can receive up to ${remaining} ${item.productSnapshot.unit}.`)
+  }
+  const receiptId = requestId || id()
+  const receiptNumber = `GR-${new Date().getFullYear()}-${receiptId.replace(/[^a-z0-9]/gi, '').slice(-8).toUpperCase()}`
+  const catalog = await productService.getProducts()
+  const stockChanges = []
+  for (const { item, received } of lines) {
+    const current = catalog.find(product => product.id === item.productId)
+    if (!current) throw new Error(`Product ${item.productSnapshot.name} is no longer available.`)
+    if (current.trackInventory && current.status !== 'active') throw new Error(`${current.name} must be reactivated before stock can be received.`)
+    if (current.trackInventory) stockChanges.push({ product: { ...current, name: item.productSnapshot.name, sku: item.productSnapshot.sku, unit: item.productSnapshot.unit }, input: { type: 'purchase_receipt' as const, quantityChange: received, unitCost: item.unitCost, referenceType: 'purchase' as const, referenceId: receiptId, referenceNumber: receiptNumber, reason: `Goods received for ${purchase.purchaseNumber}`, notes: notes.trim() || undefined } })
+  }
+  const receipt: GoodsReceipt = {
+    id: receiptId, requestId, receiptNumber, purchaseId, supplierId: purchase.supplierId,
+    supplierSnapshot: { ...purchase.supplierSnapshot },
+    items: lines.map(({ item, received }) => ({ purchaseItemId: item.id, productId: item.productId, productSnapshot: { name: item.productSnapshot.name, sku: item.productSnapshot.sku, unit: item.productSnapshot.unit }, quantityReceived: received })),
+    receivedAt: new Date().toISOString(), receivedBy: 'Ayesha Khan', notes: notes.trim() || undefined,
+  }
+  recordStockChanges(stockChanges)
+  const newItems = purchase.items.map(item => ({ ...item, receivedQuantity: money(item.receivedQuantity + (quantities[item.id] ?? 0)) }))
+  const complete = newItems.every(item => item.receivedQuantity >= item.orderedQuantity)
+  const hasReceived = newItems.some(item => item.receivedQuantity > 0)
+  const updated: Purchase = { ...purchase, items: newItems, status: complete ? 'received' : hasReceived ? 'partially_received' : purchase.status, updatedAt: receipt.receivedAt }
+  receipts = [receipt, ...receipts]; purchases = purchases.map(p => p.id === purchaseId ? updated : p); save()
+  return copyReceipt(receipt)
+}
+
+export function getPurchaseStatistics() {
+  const confirmed = purchases.filter(p => !['draft', 'cancelled'].includes(p.status))
+  return { totalAmount: money(confirmed.reduce((sum, p) => sum + p.totalAmount, 0)), transactions: confirmed.length, pendingReceipts: confirmed.filter(p => p.status === 'ordered' || p.status === 'partially_received').length }
+}
+export function getPurchaseStockPreview(purchaseId: string) { const purchase = getPurchaseById(purchaseId); return purchase?.items.map(item => ({ ...item, currentStock: getProductStock(item.productId), remainingQuantity: Math.max(0, item.orderedQuantity - item.receivedQuantity) })) ?? [] }

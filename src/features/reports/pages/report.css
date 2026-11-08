@@ -1,0 +1,21 @@
+.report-link { min-height: 108px; }
+.report-filter select,
+.report-filter input { max-width: 100%; }
+@media print {
+  @page { margin: 12mm; }
+  body { background: #fff !important; }
+  body * { visibility: hidden !important; }
+  .report-print,
+  .report-print * { visibility: visible !important; }
+  .report-print { position: absolute; inset: 0; width: 100%; padding: 0; background: #fff !important; }
+  .report-print .no-print,
+  .report-print .report-filter,
+  .report-print button,
+  .report-print input,
+  .report-print select { display: none !important; }
+  .report-print .recharts-responsive-container { min-height: 220px !important; }
+  .report-print .report-data-table { break-inside: avoid; box-shadow: none !important; }
+  .report-print table { width: 100%; border-collapse: collapse; }
+  .report-print th,
+  .report-print td { border-bottom: 1px solid #cbd5e1; padding: 5px; font-size: 8.5pt; }
+}

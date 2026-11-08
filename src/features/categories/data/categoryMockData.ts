@@ -1,0 +1,73 @@
+import type { Category } from '../types/category.types'
+
+const seedDate = '2026-10-15T10:00:00.000Z'
+
+export const initialCategories: Category[] = [
+  {
+    id: 'electronics',
+    name: 'Electronics',
+    slug: 'electronics',
+    description: 'Computers, wireless peripherals, cables, audio gear, and gadgets.',
+    color: 'blue',
+    icon: 'Laptop',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+  {
+    id: 'accessories',
+    name: 'Accessories',
+    slug: 'accessories',
+    description: 'Daily lifestyle accessories, charging cords, wallets, and wearable items.',
+    color: 'indigo',
+    icon: 'Headphones',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+  {
+    id: 'grocery',
+    name: 'Grocery',
+    slug: 'grocery',
+    description: 'Pantry staples, rice, cooking oils, grains, and kitchen provisions.',
+    color: 'emerald',
+    icon: 'ShoppingBag',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+  {
+    id: 'clothing',
+    name: 'Clothing',
+    slug: 'clothing',
+    description: 'Men and women apparel, basic cotton tees, denim jeans, and seasonal garments.',
+    color: 'purple',
+    icon: 'Shirt',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+  {
+    id: 'home-kitchen',
+    name: 'Home & Kitchen',
+    slug: 'home-kitchen',
+    description: 'Cookware, dinnerware, insulated bottles, and home utility appliances.',
+    color: 'amber',
+    icon: 'Utensils',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+  {
+    id: 'stationery',
+    name: 'Stationery',
+    slug: 'stationery',
+    description: 'Office paper supplies, notebooks, pens, markers, and desk accessories.',
+    color: 'cyan',
+    icon: 'BookOpen',
+    status: 'active',
+    createdAt: seedDate,
+    updatedAt: seedDate,
+  },
+]
+

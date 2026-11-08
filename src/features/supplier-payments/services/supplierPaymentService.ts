@@ -1,0 +1,53 @@
+import { supplierService } from '../../suppliers/services/supplierService'
+import { getPurchases } from '../../purchases/services/purchaseService'
+import { money } from '../../pos/utils/checkoutCalculations'
+import type { OutstandingPurchase, SupplierPayment, SupplierPaymentDraft } from '../types/supplierPayment.types'
+
+const KEY = 'northstar.supplier-payments.v1'
+function load(): SupplierPayment[] { try { const value: unknown = JSON.parse(localStorage.getItem(KEY) ?? '[]'); return Array.isArray(value) ? value as SupplierPayment[] : [] } catch { return [] } }
+let payments = load()
+function persist() { try { localStorage.setItem(KEY, JSON.stringify(payments)) } catch { /* Keep the in-memory demo data available without browser storage. */ } }
+function copy(payment: SupplierPayment): SupplierPayment { return { ...payment, supplierSnapshot: { ...payment.supplierSnapshot }, methodBreakdown: payment.methodBreakdown.map(m => ({ ...m })), allocations: payment.allocations.map(a => ({ ...a })) } }
+export function getSupplierPayments() { return payments.map(copy).sort((a, b) => b.paidAt.localeCompare(a.paidAt)) }
+export function getSupplierPaymentById(id: string) { const payment = payments.find(item => item.id === id); return payment ? copy(payment) : undefined }
+export function getPaymentsForSupplier(supplierId: string) { return getSupplierPayments().filter(payment => payment.supplierId === supplierId) }
+export function getPaymentsForPurchase(purchaseId: string) { return getSupplierPayments().filter(payment => payment.allocations.some(allocation => allocation.purchaseId === purchaseId)) }
+
+export function getSupplierOutstandingPurchases(supplierId?: string): OutstandingPurchase[] {
+  const paid = new Map<string, number>()
+  for (const payment of payments) for (const allocation of payment.allocations) paid.set(allocation.purchaseId, money((paid.get(allocation.purchaseId) ?? 0) + allocation.amount))
+  return getPurchases().filter(purchase => !['draft', 'cancelled'].includes(purchase.status) && (!supplierId || purchase.supplierId === supplierId)).map(purchase => {
+    const amountPaid = paid.get(purchase.id) ?? 0
+    return { purchaseId: purchase.id, purchaseNumber: purchase.purchaseNumber, supplierInvoiceNumber: purchase.supplierInvoiceNumber, date: purchase.purchaseDate, supplierId: purchase.supplierId, supplierName: purchase.supplierSnapshot.name, totalAmount: purchase.totalAmount, amountPaid, outstanding: money(Math.max(0, purchase.totalAmount - amountPaid)) }
+  }).filter(purchase => purchase.outstanding > 0)
+}
+export function getSupplierAdvanceBalance(supplierId: string) { return money(payments.filter(p => p.supplierId === supplierId).reduce((sum, payment) => sum + payment.unallocatedAmount, 0)) }
+export async function createSupplierPayment(draft: SupplierPaymentDraft) {
+  const previous = draft.requestId ? payments.find(payment => payment.requestId === draft.requestId) : undefined
+  if (previous) return copy(previous)
+  const supplier = await supplierService.getSupplierById(draft.supplierId)
+  if (!supplier || supplier.status !== 'active') throw new Error('Select an active supplier.')
+  const amount = money(draft.amount)
+  if (!Number.isFinite(draft.amount) || amount <= 0) throw new Error('Payment amount must be greater than zero.')
+  if (!draft.methodBreakdown.length || draft.methodBreakdown.some(method => !Number.isFinite(method.amount) || money(method.amount) <= 0) || money(draft.methodBreakdown.reduce((sum, method) => sum + method.amount, 0)) !== amount) throw new Error('Payment methods must add up to the total payment.')
+  const allocated = money(draft.allocations.reduce((sum, allocation) => sum + allocation.amount, 0))
+  if (draft.allocations.some(allocation => !Number.isFinite(allocation.amount) || money(allocation.amount) <= 0) || allocated > amount) throw new Error('Purchase allocations must be positive and cannot exceed the payment.')
+  const outstanding = getSupplierOutstandingPurchases(supplier.id)
+  const allocatedByPurchase = new Map<string, number>()
+  for (const allocation of draft.allocations) {
+    const purchase = outstanding.find(item => item.purchaseId === allocation.purchaseId && item.purchaseNumber === allocation.purchaseNumber && item.supplierId === supplier.id)
+    if (!purchase) throw new Error('An allocation must reference a confirmed outstanding purchase for this supplier.')
+    const total = money((allocatedByPurchase.get(allocation.purchaseId) ?? 0) + allocation.amount)
+    if (total > purchase.outstanding) throw new Error(`${purchase.purchaseNumber} has only ${formatAmount(purchase.outstanding)} remaining.`)
+    allocatedByPurchase.set(allocation.purchaseId, total)
+  }
+  const unallocatedAmount = money(amount - allocated)
+  if (unallocatedAmount > 0 && !draft.keepAsAdvance) throw new Error('Confirm that the unallocated amount should remain as supplier advance.')
+  const now = new Date().toISOString(); const id = globalThis.crypto?.randomUUID?.() ?? `sp-${Date.now()}`
+  const payment: SupplierPayment = { id, requestId: draft.requestId, receiptNumber: `SP-${Date.now().toString().slice(-8)}-${id.slice(-5).toUpperCase()}`, supplierId: supplier.id, supplierSnapshot: { name: supplier.name, supplierCode: supplier.supplierCode, companyName: supplier.companyName }, amount, methodBreakdown: draft.methodBreakdown.map((method, index) => ({ ...method, amount: money(method.amount), id: `${id}-m${index + 1}` })), allocations: draft.allocations.map(allocation => ({ ...allocation, amount: money(allocation.amount) })), unallocatedAmount, paidAt: draft.paidAt, paidBy: 'Ayesha Khan', notes: draft.notes?.trim() || undefined, createdAt: now }
+  payments = [payment, ...payments]; persist(); return copy(payment)
+}
+function formatAmount(value: number) { return value.toLocaleString('en-PK', { maximumFractionDigits: 2 }) }
+export function getSupplierPaymentStatistics() {
+  return { totalPaid: money(payments.reduce((sum, payment) => sum + payment.amount, 0)), transactions: payments.length, outstanding: money(getSupplierOutstandingPurchases().reduce((sum, purchase) => sum + purchase.outstanding, 0)), advances: money(payments.reduce((sum, payment) => sum + payment.unallocatedAmount, 0)) }
+}

@@ -1,0 +1,2 @@
+import type { ReactNode } from 'react'
+export function PageHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) { return <div className="mb-6 flex flex-wrap items-end justify-between gap-4"><div><div className="mb-1 text-xs text-slate-400">Workspace / <span className="text-slate-600">{title}</span></div><h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>{description && <p className="mt-1 text-sm text-slate-500">{description}</p>}</div>{action}</div> }
