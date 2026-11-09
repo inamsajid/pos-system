@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { categoryService } from '../services/categoryService'
 import type { CategoryDraft, CategoryWithStats } from '../types/category.types'
+import { queryClient } from '../../../app/queryClient'
+import { queryKeys } from '../../../api/queryKeys'
 
 export function useCategories() {
   const [categories, setCategories] = useState<CategoryWithStats[]>([])
@@ -28,6 +30,7 @@ export function useCategories() {
     async (draft: CategoryDraft) => {
       const created = await categoryService.createCategory(draft)
       await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.categories.all })
       return created
     },
     [reload]
@@ -37,6 +40,7 @@ export function useCategories() {
     async (id: string, draft: CategoryDraft) => {
       const updated = await categoryService.updateCategory(id, draft)
       await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.categories.all })
       return updated
     },
     [reload]
@@ -46,6 +50,7 @@ export function useCategories() {
     async (id: string) => {
       const archived = await categoryService.archiveCategory(id)
       await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.categories.all })
       return archived
     },
     [reload]
@@ -55,6 +60,7 @@ export function useCategories() {
     async (id: string) => {
       const restored = await categoryService.restoreCategory(id)
       await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.categories.all })
       return restored
     },
     [reload]

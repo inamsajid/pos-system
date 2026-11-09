@@ -1,0 +1,79 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pos-system-worker",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    "ENVIRONMENT": "local",
+    "TIMEZONE": "Asia/Karachi",
+    "SERVICE_NAME": "pos-system-api",
+    "API_VERSION": "v1"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pos-system-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "worker/migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "pos-system-local-files"
+    }
+  ],
+
+  "env": {
+    "staging": {
+      "name": "pos-system-worker-staging",
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "TIMEZONE": "Asia/Karachi",
+        "SERVICE_NAME": "pos-system-api-staging",
+        "API_VERSION": "v1"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "pos-system-staging-d1",
+          "database_id": "<STAGING_D1_DATABASE_ID_PLACEHOLDER>",
+          "migrations_dir": "worker/migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "FILES",
+          "bucket_name": "pos-system-staging-files"
+        }
+      ]
+    },
+    "production": {
+      "name": "pos-system-worker-production",
+      "vars": {
+        "ENVIRONMENT": "production",
+        "TIMEZONE": "Asia/Karachi",
+        "SERVICE_NAME": "pos-system-api-production",
+        "API_VERSION": "v1"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "pos-system-prod-d1",
+          "database_id": "<PROD_D1_DATABASE_ID_PLACEHOLDER>",
+          "migrations_dir": "worker/migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "FILES",
+          "bucket_name": "pos-system-prod-files"
+        }
+      ]
+    }
+  }
+}

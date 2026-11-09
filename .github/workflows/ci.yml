@@ -1,0 +1,41 @@
+name: CI Verification Pipeline
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  verify:
+    name: Lint, Test, and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies (clean lockfile)
+        run: npm ci
+
+      - name: Worker TypeScript check
+        run: npm run build:worker
+
+      - name: Linter validation
+        run: npm run lint
+
+      - name: Run automated test suite
+        run: npm test
+
+      - name: Frontend production build
+        run: npm run build
+
+      - name: Database migration verification
+        run: npx vitest run tests/d1Database.test.ts tests/step12_8_systemAcceptance.test.ts
+

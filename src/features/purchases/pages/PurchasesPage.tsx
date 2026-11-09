@@ -1,22 +1,33 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { EmptyState } from '../../../components/feedback/EmptyState'
 import { formatCurrency } from '../../../lib/currency'
-import { formatBusinessDate } from '../../../lib/date'
-import { getPurchases, getPurchaseStatistics } from '../services/purchaseService'
+import { formatBusinessDate, getBusinessDatePreset, isWithinBusinessDateRange } from '../../../lib/businessDate'
+import { getPurchases, getPurchaseStatistics, fetchPurchases } from '../services/purchaseService'
 import { getSupplierOutstandingPurchases, getPaymentsForPurchase } from '../../supplier-payments/services/supplierPaymentService'
 import type { Purchase } from '../types/purchase.types'
 
 type Range = 'all' | 'today' | 'yesterday' | '7' | '30' | 'month' | 'last-month' | 'custom'
-function inRange(value: string, range: Range, from: string, to: string) { const date = new Date(value); if (range === 'all') return true; if (range === 'custom') return (!from || date >= new Date(`${from}T00:00:00`)) && (!to || date <= new Date(`${to}T23:59:59.999`)); const today = new Date(); today.setHours(0, 0, 0, 0); if (range === 'today') return date >= today && date < new Date(today.getTime() + 86400000); if (range === 'yesterday') { const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1); return date >= yesterday && date < today } if (range === '7' || range === '30') { const start = new Date(today); start.setDate(today.getDate() - Number(range) + 1); return date >= start } if (range === 'month') return date >= new Date(today.getFullYear(), today.getMonth(), 1); return date >= new Date(today.getFullYear(), today.getMonth() - 1, 1) && date < new Date(today.getFullYear(), today.getMonth(), 1) }
+function inRange(value: string, range: Range, from: string, to: string) {
+  if (range === 'all') return true
+  if (range === 'custom') return isWithinBusinessDateRange(value, from, to)
+  const preset = getBusinessDatePreset(range)
+  return isWithinBusinessDateRange(value, preset.from, preset.to)
+}
 function paid(purchase: Purchase) { return getPaymentsForPurchase(purchase.id).reduce((sum, payment) => sum + payment.allocations.filter(a => a.purchaseId === purchase.id).reduce((n, allocation) => n + allocation.amount, 0), 0) }
 function paymentLabel(purchase: Purchase) { const totalPaid = paid(purchase); return totalPaid >= purchase.totalAmount ? 'Paid' : totalPaid > 0 ? 'Partial' : 'Unpaid' }
 
 export function PurchasesPage() {
-  const purchases = getPurchases(); const stats = getPurchaseStatistics(); const outstanding = getSupplierOutstandingPurchases()
+  const [purchases, setPurchases] = useState<Purchase[]>(() => getPurchases())
+  const stats = getPurchaseStatistics()
+  const outstanding = getSupplierOutstandingPurchases()
+
+  useEffect(() => {
+    void fetchPurchases().then(setPurchases)
+  }, [])
   const [query, setQuery] = useState(''); const [status, setStatus] = useState(''); const [payment, setPayment] = useState(''); const [range, setRange] = useState<Range>('all'); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [sort, setSort] = useState('newest'); const [page, setPage] = useState(1); const [size, setSize] = useState(10)
   const filtered = useMemo(() => purchases.filter(p => (!query || [p.purchaseNumber, p.supplierInvoiceNumber, p.supplierSnapshot.name, p.supplierSnapshot.supplierCode].some(v => v?.toLowerCase().includes(query.toLowerCase()))) && (!status || p.status === status) && (!payment || paymentLabel(p).toLowerCase() === payment) && inRange(p.purchaseDate, range, from, to)).sort((a, b) => sort === 'amount' ? b.totalAmount - a.totalAmount : sort === 'oldest' ? a.purchaseDate.localeCompare(b.purchaseDate) : b.purchaseDate.localeCompare(a.purchaseDate)), [purchases, query, status, payment, range, from, to, sort])
   const pages = Math.max(1, Math.ceil(filtered.length / size)); const rows = filtered.slice((page - 1) * size, page * size)

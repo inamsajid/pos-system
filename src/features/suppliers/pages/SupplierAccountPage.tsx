@@ -1,27 +1,244 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Download } from 'lucide-react'
+import { Download, Building2 } from 'lucide-react'
 import { PageHeader } from '../../../components/common/PageHeader'
-import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
-import { formatCurrency } from '../../../lib/currency'
-import { formatBusinessDate } from '../../../lib/date'
 import { supplierService } from '../services/supplierService'
-import { getSupplierLedger, getSupplierLedgerSummary } from '../services/supplierLedgerService'
+import type { Supplier } from '../types/supplier.types'
+import { useSupplierLedger } from '../../ledger/hooks/useSupplierLedger'
+import {
+  LedgerSummaryCards,
+  LedgerFilters,
+  LedgerTable,
+  LedgerPagination,
+  LedgerBalanceDisplay,
+  type LedgerSummaryItem,
+  type LedgerRowData,
+} from '../../ledger/components'
+import { isWithinBusinessDateRange } from '../../../lib/businessDate'
 
 export function SupplierAccountPage() {
-  const { supplierId = '' } = useParams()
-  const [supplier, setSupplier] = useState<Awaited<ReturnType<typeof supplierService.getSupplierById>>>()
-  useEffect(() => { void supplierService.getSupplierById(supplierId).then(setSupplier) }, [supplierId])
-  const ledger = getSupplierLedger(supplierId)
-  const summary = getSupplierLedgerSummary(supplierId)
-  const [query, setQuery] = useState(''); const [type, setType] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState('')
-  const rows = useMemo(() => ledger.filter(entry => (!query || [entry.reference, entry.description].some(value => value.toLowerCase().includes(query.toLowerCase()))) && (!type || entry.type === type) && (!from || entry.date.slice(0, 10) >= from) && (!to || entry.date.slice(0, 10) <= to)), [ledger, query, type, from, to])
-  const exportCsv = () => { const data = [['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'], ...rows.map(entry => [entry.date, entry.type, entry.reference, entry.description, String(entry.debit), String(entry.credit), String(entry.balance)])]; const csv = data.map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n'); const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); const a = document.createElement('a'); a.href = url; a.download = `supplier-ledger-${supplierId}.csv`; a.click(); URL.revokeObjectURL(url) }
-  if (!supplier) return <PageHeader title="Supplier not found" description="This supplier is not available." />
-  return <><PageHeader title={`${supplier.name} account`} description="Read-only account ledger calculated from opening balance, confirmed purchases and recorded supplier payments." action={<div className="flex gap-2"><Button onClick={exportCsv}><Download size={15} /> Export ledger</Button><Link to={`/suppliers/${supplierId}`}><Button>Back to supplier</Button></Link><Link to={`/supplier-payments/new?supplierId=${supplierId}`}><Button variant="primary">Record payment</Button></Link></div>} />
-    <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-5">{[['Opening payable', summary.openingPayable], ['Purchases', summary.totalPurchases], ['Payments', summary.totalPaid], ['Outstanding payable', summary.outstandingPayable], ['Advance balance', summary.advanceBalance]].map(([label, value]) => <Card key={String(label)} className="p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 font-bold">{formatCurrency(Number(value))}</p></Card>)}</div>
-    <Card className="mb-4 grid min-w-0 gap-2 p-4 sm:grid-cols-2 xl:grid-cols-4"><input aria-label="Search supplier ledger" className="min-w-0 rounded border p-2 text-sm" placeholder="Reference or description" value={query} onChange={event => setQuery(event.target.value)} /><select aria-label="Transaction type" className="rounded border p-2 text-sm" value={type} onChange={event => setType(event.target.value)}><option value="">All transaction types</option><option value="opening">Opening balance</option><option value="purchase">Purchase bills</option><option value="payment">Payments</option></select><input aria-label="From date" type="date" className="min-w-0 rounded border p-2 text-sm" value={from} onChange={event => setFrom(event.target.value)} /><input aria-label="To date" type="date" className="min-w-0 rounded border p-2 text-sm" value={to} onChange={event => setTo(event.target.value)} /><Button onClick={() => { setQuery(''); setType(''); setFrom(''); setTo('') }}>Clear filters</Button></Card>
-    <Card className="overflow-hidden p-4"><div className="flex flex-wrap justify-between gap-2"><div><h2 className="font-bold">Supplier ledger</h2><p className="text-xs text-slate-500">Current account balance {formatCurrency(summary.currentAccountBalance ?? 0)}</p></div><span className="text-xs text-slate-500">{rows.length} entries</span></div>{rows.length ? <><div className="mt-3 hidden overflow-x-auto md:block"><table className="w-full min-w-[780px] text-left text-xs"><thead className="bg-slate-50 text-[10px] uppercase text-slate-500"><tr>{['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'].map(title => <th className="p-3" key={title}>{title}</th>)}</tr></thead><tbody>{rows.map(entry => <tr className="border-t" key={entry.id}><td className="p-3">{formatBusinessDate(new Date(entry.date))}</td><td className="capitalize">{entry.type}</td><td>{entry.purchaseId ? <Link className="text-blue-600" to={`/purchases/${entry.purchaseId}`}>{entry.reference}</Link> : entry.paymentId ? <Link className="text-blue-600" to={`/supplier-payments/${entry.paymentId}`}>{entry.reference}</Link> : entry.reference}</td><td>{entry.description}</td><td>{entry.debit ? formatCurrency(entry.debit) : '—'}</td><td>{entry.credit ? formatCurrency(entry.credit) : '—'}</td><td className="font-semibold">{formatCurrency(entry.balance)}</td></tr>)}</tbody></table></div><div className="divide-y md:hidden">{rows.map(entry => <article key={entry.id} className="py-3 text-sm"><div className="flex justify-between gap-3"><strong>{entry.purchaseId ? <Link className="text-blue-600" to={`/purchases/${entry.purchaseId}`}>{entry.reference}</Link> : entry.paymentId ? <Link className="text-blue-600" to={`/supplier-payments/${entry.paymentId}`}>{entry.reference}</Link> : entry.reference}</strong><span className="font-semibold">{formatCurrency(entry.balance)}</span></div><p className="text-xs text-slate-500">{formatBusinessDate(new Date(entry.date))} · {entry.type} · {entry.description}</p><p className="mt-1 text-xs">Debit {formatCurrency(entry.debit)} · Credit {formatCurrency(entry.credit)}</p></article>)}</div></> : <p className="py-8 text-center text-sm text-slate-500">No ledger entries match these filters.</p>}</Card>
-  </>
+  const params = useParams()
+  const supplierId = params.supplierId || params.id || ''
+
+  const [supplier, setSupplier] = useState<Supplier>()
+  const [query, setQuery] = useState('')
+  const [type, setType] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+
+  useEffect(() => {
+    if (supplierId) {
+      void supplierService.getSupplierById(supplierId).then(setSupplier)
+    }
+  }, [supplierId])
+
+  const { entries, summary, isLoading } = useSupplierLedger(supplierId)
+
+  // Filter entries
+  const filtered = useMemo(() => {
+    return entries.filter((entry) => {
+      const matchesType = !type || entry.type === type
+      const matchesDate = isWithinBusinessDateRange(entry.date, fromDate, toDate)
+      const matchesQuery =
+        !query ||
+        [entry.reference, entry.description].some((val) =>
+          val.toLowerCase().includes(query.toLowerCase())
+        )
+      return matchesType && matchesDate && matchesQuery
+    })
+  }, [entries, type, fromDate, toDate, query])
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const paginatedEntries = useMemo(() => {
+    const start = (page - 1) * pageSize
+    return filtered.slice(start, start + pageSize)
+  }, [filtered, page, pageSize])
+
+  // Map to LedgerRowData
+  const tableRows: LedgerRowData[] = useMemo(() => {
+    return paginatedEntries.map((entry) => {
+      return {
+        id: entry.id,
+        date: entry.date,
+        type: entry.type,
+        reference: entry.reference,
+        description: entry.description,
+        debit: entry.debit,
+        credit: entry.credit,
+        balance: entry.balance,
+        purchaseId: entry.purchaseId,
+        paymentId: entry.paymentId,
+      }
+    })
+  }, [paginatedEntries])
+
+  // Summary cards
+  const summaryItems: LedgerSummaryItem[] = useMemo(() => {
+    const opening = summary?.openingPayable ?? 0
+    const totalPurchases = summary?.totalPurchases ?? 0
+    const totalPaid = summary?.totalPaid ?? 0
+    const outstanding = summary?.outstandingPayable ?? 0
+    const advances = summary?.advanceBalance ?? 0
+
+    return [
+      { label: 'Opening payable', value: opening },
+      { label: 'Purchases (Credit)', value: totalPurchases },
+      { label: 'Payments (Debit)', value: totalPaid, variant: 'success' },
+      {
+        label: 'Outstanding payable',
+        value: outstanding,
+        variant: outstanding > 0 ? 'danger' : 'default',
+      },
+      { label: 'Unallocated advance', value: advances, variant: advances > 0 ? 'success' : 'default' },
+    ]
+  }, [summary])
+
+  const exportCsv = () => {
+    const data = [
+      ['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'],
+      ...filtered.map((entry) => [
+        entry.date,
+        entry.type,
+        entry.reference,
+        entry.description,
+        String(entry.debit),
+        String(entry.credit),
+        String(entry.balance),
+      ]),
+    ]
+    const csv = data
+      .map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(','))
+      .join('\r\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `supplier-ledger-${supplierId}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleClearFilters = () => {
+    setQuery('')
+    setType('')
+    setFromDate('')
+    setToDate('')
+    setPage(1)
+  }
+
+  if (!supplier && !isLoading) {
+    return (
+      <PageHeader
+        title="Supplier not found"
+        description="The requested supplier does not exist."
+        action={
+          <Link to="/suppliers">
+            <Button variant="secondary">Back to suppliers</Button>
+          </Link>
+        }
+      />
+    )
+  }
+
+  return (
+    <>
+      <PageHeader
+        title={`${supplier?.name || 'Supplier'} — Account & Ledger`}
+        description="Read-only account ledger calculated from opening balance, confirmed purchase bills and recorded payments."
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={exportCsv} className="flex items-center gap-1.5">
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+            <Link to="/ledger">
+              <Button variant="secondary">All Ledgers</Button>
+            </Link>
+            {supplier && (
+              <Link to={`/suppliers/${supplierId}`}>
+                <Button variant="secondary" className="flex items-center gap-1.5">
+                  <Building2 className="h-4 w-4" />
+                  Supplier Profile
+                </Button>
+              </Link>
+            )}
+            {supplier && (
+              <Link to={`/supplier-payments/new?supplierId=${supplierId}`}>
+                <Button variant="primary">Record Payment</Button>
+              </Link>
+            )}
+          </div>
+        }
+      />
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4">
+        <LedgerBalanceDisplay
+          balance={summary?.currentAccountBalance ?? summary?.outstandingPayable ?? 0}
+          type="supplier"
+          label="Net Accounts Payable"
+        />
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <span>Supplier Code: <strong>{supplier?.supplierCode || '—'}</strong></span>
+          {supplier?.phone && <span>Phone: <strong>{supplier.phone}</strong></span>}
+        </div>
+      </div>
+
+      <LedgerSummaryCards items={summaryItems} columns={5} />
+
+      <LedgerFilters
+        searchQuery={query}
+        onSearchChange={(val) => {
+          setQuery(val)
+          setPage(1)
+        }}
+        selectedType={type}
+        onTypeChange={(val) => {
+          setType(val)
+          setPage(1)
+        }}
+        typeOptions={[
+          { value: '', label: 'All transaction types' },
+          { value: 'opening', label: 'Opening balance' },
+          { value: 'purchase', label: 'Purchase bills' },
+          { value: 'payment', label: 'Payments' },
+        ]}
+        fromDate={fromDate}
+        onFromDateChange={(val) => {
+          setFromDate(val)
+          setPage(1)
+        }}
+        toDate={toDate}
+        onToDateChange={(val) => {
+          setToDate(val)
+          setPage(1)
+        }}
+        onClear={handleClearFilters}
+      />
+
+      <LedgerTable
+        entries={tableRows}
+        source="supplier"
+        emptyMessage="No supplier ledger entries match these filters."
+      />
+
+      {filtered.length > 0 && (
+        <div className="mt-2 bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <LedgerPagination
+            currentPage={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize)
+              setPage(1)
+            }}
+          />
+        </div>
+      )}
+    </>
+  )
 }

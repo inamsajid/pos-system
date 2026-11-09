@@ -1,34 +1,254 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { Download, User } from 'lucide-react'
 import { PageHeader } from '../../../components/common/PageHeader'
-import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
-import { formatCurrency } from '../../../lib/currency'
-import { formatBusinessDate } from '../../../lib/date'
 import { customerService } from '../services/customerService'
-import { getCustomerLedger, getCustomerLedgerSummary } from '../services/customerLedgerService'
 import type { Customer } from '../types/customer.types'
+import { useCustomerLedger } from '../../ledger/hooks/useCustomerLedger'
+import {
+  LedgerSummaryCards,
+  LedgerFilters,
+  LedgerTable,
+  LedgerPagination,
+  LedgerBalanceDisplay,
+  type LedgerSummaryItem,
+  type LedgerRowData,
+} from '../../ledger/components'
+import { isWithinBusinessDateRange } from '../../../lib/businessDate'
 
 export function CustomerAccountPage() {
-  const { id = '' } = useParams()
+  const params = useParams()
+  const customerId = params.customerId || params.id || ''
+
   const [customer, setCustomer] = useState<Customer>()
-  const [kind, setKind] = useState('')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
   const [query, setQuery] = useState('')
-  useEffect(() => { void customerService.getCustomerById(id).then(setCustomer) }, [id])
-  const entries = useMemo(() => id ? getCustomerLedger(id) : [], [id])
-  const summary = useMemo(() => id ? getCustomerLedgerSummary(id) : undefined, [id])
-  const filtered = useMemo(() => entries.filter(e => (!kind || e.type === kind) && (!from || e.date.slice(0, 10) >= from) && (!to || e.date.slice(0, 10) <= to) && (!query || `${e.reference} ${e.description}`.toLowerCase().includes(query.toLowerCase()))), [entries, kind, from, to, query])
+  const [kind, setKind] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+
+  useEffect(() => {
+    if (customerId) {
+      void customerService.getCustomerById(customerId).then(setCustomer)
+    }
+  }, [customerId])
+
+  const { entries, summary, isLoading } = useCustomerLedger(customerId)
+
+  // Filter entries
+  const filtered = useMemo(() => {
+    return entries.filter((e) => {
+      const matchesKind = !kind || e.type === kind
+      const matchesDate = isWithinBusinessDateRange(e.date, fromDate, toDate)
+      const matchesQuery =
+        !query ||
+        `${e.reference} ${e.description}`.toLowerCase().includes(query.toLowerCase())
+      return matchesKind && matchesDate && matchesQuery
+    })
+  }, [entries, kind, fromDate, toDate, query])
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const paginatedEntries = useMemo(() => {
+    const start = (page - 1) * pageSize
+    return filtered.slice(start, start + pageSize)
+  }, [filtered, page, pageSize])
+
+  // Map to LedgerRowData
+  const tableRows: LedgerRowData[] = useMemo(() => {
+    return paginatedEntries.map((e) => {
+      const invoiceId = e.invoiceNumber
+        ? e.id.startsWith('invoice-')
+          ? e.id.replace('invoice-', '')
+          : e.id
+        : undefined
+
+      return {
+        id: e.id,
+        date: e.date,
+        type: e.type,
+        reference: e.reference,
+        description: e.description,
+        debit: e.debit,
+        credit: e.credit,
+        balance: e.balance,
+        invoiceId,
+        paymentId: e.paymentId,
+      }
+    })
+  }, [paginatedEntries])
+
+  // Summary cards items
+  const summaryItems: LedgerSummaryItem[] = useMemo(() => {
+    const opening = summary?.openingBalance ?? 0
+    const totalDebit = (summary?.totalPurchases ?? 0) + opening
+    const totalCredit = summary?.totalPaid ?? 0
+    const outstanding = summary?.outstandingBalance ?? 0
+    const advances = summary?.advanceBalance ?? 0
+    const currentBalance = summary?.currentAccountBalance ?? 0
+
+    return [
+      { label: 'Opening balance', value: opening },
+      { label: 'Total invoices (Debit)', value: totalDebit },
+      { label: 'Total paid (Credit)', value: totalCredit, variant: 'success' },
+      {
+        label: 'Outstanding receivables',
+        value: outstanding,
+        variant: outstanding > 0 ? 'warning' : 'default',
+      },
+      { label: 'Unallocated advances', value: advances },
+      {
+        label: 'Current account balance',
+        value: currentBalance,
+        variant: currentBalance > 0 ? 'danger' : currentBalance < 0 ? 'success' : 'default',
+      },
+    ]
+  }, [summary])
+
   const exportCsv = () => {
-    const rows = [['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'], ...filtered.map(e => [e.date, e.type, e.reference, e.description, String(e.debit), String(e.credit), String(e.balance)])]
-    const csv = rows.map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n')
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); const a = document.createElement('a'); a.href = url; a.download = `${customer?.customerCode ?? 'customer'}-ledger.csv`; a.click(); URL.revokeObjectURL(url)
+    const rows = [
+      ['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'],
+      ...filtered.map((e) => [
+        e.date,
+        e.type,
+        e.reference,
+        e.description,
+        String(e.debit),
+        String(e.credit),
+        String(e.balance),
+      ]),
+    ]
+    const csv = rows
+      .map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(','))
+      .join('\r\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${customer?.customerCode ?? 'customer'}-ledger.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
-  if (!customer) return <PageHeader title="Customer not found" description="This customer is not available." />
-  return <><PageHeader title="Customer ledger" description={`Account transactions for ${customer.name}.`} action={<div className="flex gap-2"><Button onClick={exportCsv}>Export ledger</Button><Link to={`/customers/${customer.id}`}><Button>Back to profile</Button></Link></div>} />
-    <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">{[['Opening balance', summary?.openingBalance ?? 0], ['Total debit', (summary?.totalPurchases ?? 0) + (summary?.openingBalance ?? 0)], ['Total credit', summary?.totalPaid ?? 0], ['Outstanding receivables', summary?.outstandingBalance ?? 0], ['Unallocated advances', summary?.advanceBalance ?? 0], ['Current account balance', summary?.currentAccountBalance ?? 0]].map(([label, value]) => <Card key={String(label)} className="p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 font-bold">{formatCurrency(Number(value))}</p></Card>)}</div>
-    <Card className="mb-4 grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5"><input aria-label="Search ledger" placeholder="Search reference or description" value={query} onChange={e => setQuery(e.target.value)} className="rounded-lg border border-slate-200 p-2 text-sm" /><select aria-label="Transaction type" value={kind} onChange={e => setKind(e.target.value)} className="rounded-lg border border-slate-200 p-2 text-sm"><option value="">All transaction types</option><option value="opening">Opening balance</option><option value="invoice">Invoices</option><option value="payment">Payments</option></select><input aria-label="From date" type="date" value={from} onChange={e => setFrom(e.target.value)} className="rounded-lg border border-slate-200 p-2 text-sm" /><input aria-label="To date" type="date" value={to} onChange={e => setTo(e.target.value)} className="rounded-lg border border-slate-200 p-2 text-sm" /><Button onClick={() => { setQuery(''); setKind(''); setFrom(''); setTo('') }}>Clear filters</Button></Card>
-    <Card className="overflow-hidden"><div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[760px] text-left text-xs"><thead className="bg-slate-50 text-[10px] uppercase text-slate-500"><tr>{['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Running balance'].map(x => <th key={x} className="p-3">{x}</th>)}</tr></thead><tbody>{filtered.map(e => <tr key={e.id} className="border-t border-slate-100"><td className="p-3">{formatBusinessDate(new Date(e.date))}</td><td className="capitalize">{e.type}</td><td className="font-medium">{e.invoiceNumber ? <Link className="text-blue-600" to={`/invoices/${e.id.replace('invoice-', '')}`}>{e.reference}</Link> : e.paymentId ? <Link className="text-blue-600" to={`/payments/${e.paymentId}`}>{e.reference}</Link> : e.reference}</td><td>{e.description}</td><td>{e.debit ? formatCurrency(e.debit) : '—'}</td><td>{e.credit ? formatCurrency(e.credit) : '—'}</td><td className="font-semibold">{formatCurrency(e.balance)}</td></tr>)}</tbody></table></div><div className="divide-y md:hidden">{filtered.map(e => <article key={e.id} className="p-4"><div className="flex justify-between gap-3"><span className="text-xs capitalize text-slate-500">{e.type} · {formatBusinessDate(new Date(e.date))}</span><strong>{formatCurrency(e.balance)}</strong></div><p className="mt-1 font-medium">{e.invoiceNumber ? <Link className="text-blue-600" to={`/invoices/${e.id.replace('invoice-', '')}`}>{e.reference}</Link> : e.paymentId ? <Link className="text-blue-600" to={`/payments/${e.paymentId}`}>{e.reference}</Link> : e.reference}</p><p className="mt-1 text-xs text-slate-500">{e.description}</p><div className="mt-2 flex gap-4 text-xs"><span>Debit {formatCurrency(e.debit)}</span><span>Credit {formatCurrency(e.credit)}</span></div></article>)}</div>{!filtered.length && <p className="p-8 text-center text-sm text-slate-500">No ledger transactions match these filters.</p>}</Card>
-  </>
+
+  const handleClearFilters = () => {
+    setQuery('')
+    setKind('')
+    setFromDate('')
+    setToDate('')
+    setPage(1)
+  }
+
+  if (!customer && !isLoading) {
+    return (
+      <PageHeader
+        title="Customer not found"
+        description="The requested customer does not exist."
+        action={
+          <Link to="/customers">
+            <Button variant="secondary">Back to customers</Button>
+          </Link>
+        }
+      />
+    )
+  }
+
+  return (
+    <>
+      <PageHeader
+        title={`${customer?.name || 'Customer'} — Account Ledger`}
+        description={`Audit-grade financial statement and transaction history for ${customer?.customerCode || 'account'}.`}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={exportCsv} className="flex items-center gap-1.5">
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+            <Link to="/ledger">
+              <Button variant="secondary">All Ledgers</Button>
+            </Link>
+            {customer && (
+              <Link to={`/customers/${customer.id}`}>
+                <Button variant="secondary" className="flex items-center gap-1.5">
+                  <User className="h-4 w-4" />
+                  Customer Profile
+                </Button>
+              </Link>
+            )}
+            {customer && (
+              <Link to={`/payments/new?customerId=${customer.id}`}>
+                <Button variant="primary">Receive Payment</Button>
+              </Link>
+            )}
+          </div>
+        }
+      />
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4">
+        <LedgerBalanceDisplay
+          balance={summary?.currentAccountBalance ?? 0}
+          type="customer"
+          label="Net Account Balance"
+        />
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <span>Customer Code: <strong>{customer?.customerCode || '—'}</strong></span>
+          {customer?.phone && <span>Phone: <strong>{customer.phone}</strong></span>}
+        </div>
+      </div>
+
+      <LedgerSummaryCards items={summaryItems} columns={6} />
+
+      <LedgerFilters
+        searchQuery={query}
+        onSearchChange={(val) => {
+          setQuery(val)
+          setPage(1)
+        }}
+        selectedType={kind}
+        onTypeChange={(val) => {
+          setKind(val)
+          setPage(1)
+        }}
+        typeOptions={[
+          { value: '', label: 'All transaction types' },
+          { value: 'opening', label: 'Opening balance' },
+          { value: 'invoice', label: 'Invoices' },
+          { value: 'payment', label: 'Payments' },
+        ]}
+        fromDate={fromDate}
+        onFromDateChange={(val) => {
+          setFromDate(val)
+          setPage(1)
+        }}
+        toDate={toDate}
+        onToDateChange={(val) => {
+          setToDate(val)
+          setPage(1)
+        }}
+        onClear={handleClearFilters}
+      />
+
+      <LedgerTable
+        entries={tableRows}
+        source="customer"
+        emptyMessage="No customer ledger transactions found matching criteria."
+      />
+
+      {filtered.length > 0 && (
+        <div className="mt-2 bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <LedgerPagination
+            currentPage={page}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize)
+              setPage(1)
+            }}
+          />
+        </div>
+      )}
+    </>
+  )
 }

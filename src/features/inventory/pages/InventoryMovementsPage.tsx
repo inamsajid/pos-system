@@ -4,10 +4,10 @@ import { PageHeader } from '../../../components/common/PageHeader'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { EmptyState } from '../../../components/feedback/EmptyState'
-import { formatBusinessDate } from '../../../lib/date'
+import { formatBusinessDate, isWithinBusinessDateRange } from '../../../lib/businessDate'
 import { useProducts } from '../../products/hooks/useProducts'
 import { categoryService } from '../../categories/services/categoryService'
-import { getInventoryMovement, getInventoryMovements } from '../services/inventoryService'
+import { getInventoryMovement, getInventoryMovements, fetchInventoryMovements } from '../services/inventoryService'
 import type { StockMovement, StockMovementType } from '../types/inventory.types'
 
 const labels: Record<StockMovementType, string> = { opening_stock: 'Opening stock', purchase_receipt: 'Purchase receipt', sale: 'Sale', adjustment_in: 'Adjustment in', adjustment_out: 'Adjustment out', stock_count_adjustment: 'Stock count' }
@@ -23,8 +23,12 @@ export function InventoryMovementsPage() {
   const { movementId } = useParams()
   const [searchParams] = useSearchParams()
   const { products } = useProducts()
-  const all = getInventoryMovements()
+  const [all, setAll] = useState<StockMovement[]>(() => getInventoryMovements())
   const detail = movementId ? getInventoryMovement(movementId) : undefined
+
+  useEffect(() => {
+    void fetchInventoryMovements().then(setAll)
+  }, [])
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [query, setQuery] = useState('')
   const [type, setType] = useState('')
@@ -41,7 +45,7 @@ export function InventoryMovementsPage() {
     const product = productById.get(movement.productId)
     return (!query || [movement.movementNumber, movement.productSnapshot.name, movement.productSnapshot.sku, movement.referenceNumber, movement.reason].some(value => value?.toLowerCase().includes(query.toLowerCase()))) &&
       (!type || movement.type === type) && (!productId || movement.productId === productId) && (!category || product?.categoryId === category) &&
-      (!from || movement.createdAt.slice(0, 10) >= from) && (!to || movement.createdAt.slice(0, 10) <= to)
+      isWithinBusinessDateRange(movement.createdAt, from, to)
   }).sort((a, b) => sort === 'oldest' ? a.createdAt.localeCompare(b.createdAt) : sort === 'quantity' ? Math.abs(b.quantityChange) - Math.abs(a.quantityChange) : b.createdAt.localeCompare(a.createdAt)), [all, productById, query, type, productId, category, from, to, sort])
   const pages = Math.max(1, Math.ceil(filtered.length / size))
   const rows = filtered.slice((page - 1) * size, page * size)

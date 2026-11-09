@@ -1,8 +1,18 @@
+import { apiClient, ApiError, getApiContext } from '../../../lib/api-client'
+import type { ProductDTO } from '../../../api/types/dto'
 import { productMockData } from '../data/productMockData'
-import type { Product, ProductDraft, StockAdjustmentInput, StockAdjustmentRecord } from '../types/product.types'
+import type { Product, ProductDraft, StockAdjustmentInput, StockAdjustmentRecord, ProductUnit } from '../types/product.types'
 import { normalizeProductCode } from '../utils/productUtils'
 import { getProductStock, initializeInventory, initializeProduct, getProductMovements, recordSaleStockMovements, recordStockAdjustment } from '../../inventory/services/inventoryService'
 import type { StockMovement } from '../../inventory/types/inventory.types'
+import {
+  offlineDb,
+  isNetworkError,
+  syncCatalog,
+  buildProductKey,
+  type CachedProductRecord,
+  type CachedBranchStockRecord,
+} from '../../../lib/offline'
 
 export interface ProductService {
   getProducts(): Promise<Product[]>
@@ -16,8 +26,64 @@ export interface ProductService {
   deductStockForSale(items: Array<{ productId: string; quantity: number }>, sale?: { id: string; number: string }): Promise<void>
 }
 
+function isExplicitDemo(): boolean {
+  return import.meta.env?.VITE_DATA_SOURCE === 'mock'
+}
+
 let products = productMockData.map((product) => ({ ...product }))
 initializeInventory(productMockData)
+
+function mapDtoToProduct(dto: ProductDTO): Product {
+  return {
+    id: dto.id,
+    name: dto.name,
+    sku: dto.sku,
+    barcode: dto.barcode ?? undefined,
+    description: dto.description ?? undefined,
+    categoryId: dto.categoryId ?? '',
+    imageUrl: dto.imageUrl ?? undefined,
+    unit: dto.unit,
+    purchasePrice: dto.purchasePriceMinor / 100,
+    sellingPrice: dto.sellingPriceMinor / 100,
+    stockQuantity: dto.stockQuantity,
+    lowStockThreshold: dto.lowStockThreshold,
+    status: dto.status,
+    trackInventory: dto.trackInventory,
+    version: dto.version,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+  }
+}
+
+function mapCachedToProduct(
+  cached: CachedProductRecord,
+  stockRec?: CachedBranchStockRecord
+): Product {
+  return {
+    id: cached.productId,
+    name: cached.name,
+    sku: cached.sku,
+    barcode: cached.barcode ?? undefined,
+    description: undefined,
+    categoryId: cached.categoryId ?? '',
+    imageUrl: cached.imageUrl ?? undefined,
+    unit: cached.unit as ProductUnit,
+    purchasePrice: 0, // Excluded from local storage for merchant privacy
+    sellingPrice: cached.sellingPriceMinor / 100,
+    stockQuantity: stockRec?.quantityOnHand ?? 0,
+    lowStockThreshold: stockRec?.reorderThreshold ?? 0,
+    status: cached.status,
+    trackInventory: cached.trackInventory,
+    version: cached.version,
+    createdAt: cached.cachedAt,
+    updatedAt: cached.serverUpdatedAt || cached.cachedAt,
+    isCached: true,
+    isStale: true,
+    cachedAt: cached.cachedAt,
+    cachedSnapshotId: cached.snapshotId,
+    stockNotice: `Last known stock — synchronized at ${new Date(cached.cachedAt).toLocaleDateString()}. Informational only.`,
+  }
+}
 
 function cloneProduct(product: Product): Product {
   return { ...product, stockQuantity: product.trackInventory ? getProductStock(product.id) : 0 }
@@ -43,15 +109,124 @@ function createId() {
 
 export const productService: ProductService = {
   async getProducts() {
+    if (!isExplicitDemo()) {
+      try {
+        const response = await apiClient.get<ProductDTO[]>('/products?limit=100')
+        // Background sync to update Dexie offline cache
+        syncCatalog().catch(() => {})
+        return (response || []).map(mapDtoToProduct)
+      } catch (err) {
+        if (!isNetworkError(err)) {
+          throw err
+        }
+
+        // Offline fallback
+        const ctx = getApiContext()
+        if (ctx.userId && ctx.businessId) {
+          const branchId = ctx.branchId || 'default'
+          const activeSnap = await offlineDb.getActiveSnapshotId(
+            ctx.userId,
+            ctx.businessId,
+            branchId,
+            'catalog'
+          )
+
+          if (activeSnap) {
+            const [cachedProducts, stockMap] = await Promise.all([
+              offlineDb.queryProducts({
+                userId: ctx.userId,
+                businessId: ctx.businessId,
+                snapshotId: activeSnap,
+              }),
+              offlineDb.queryStockMap({
+                userId: ctx.userId,
+                businessId: ctx.businessId,
+                branchId,
+                snapshotId: activeSnap,
+              }),
+            ])
+
+            return cachedProducts.map((p) => mapCachedToProduct(p, stockMap.get(p.productId)))
+          }
+        }
+
+        throw err
+      }
+    }
     return products.map(cloneProduct)
   },
 
   async getProductById(productId) {
+    if (!isExplicitDemo()) {
+      try {
+        const response = await apiClient.get<ProductDTO>(`/products/${productId}`)
+        return response ? mapDtoToProduct(response) : undefined
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          return undefined
+        }
+        if (!isNetworkError(err)) {
+          throw err
+        }
+
+        // Offline fallback
+        const ctx = getApiContext()
+        if (ctx.userId && ctx.businessId) {
+          const branchId = ctx.branchId || 'default'
+          const activeSnap = await offlineDb.getActiveSnapshotId(
+            ctx.userId,
+            ctx.businessId,
+            branchId,
+            'catalog'
+          )
+
+          if (activeSnap) {
+            const key = buildProductKey(ctx.userId, ctx.businessId, activeSnap, productId)
+            const cached = await offlineDb.cachedProducts.get(key)
+            if (cached) {
+              const stockMap = await offlineDb.queryStockMap({
+                userId: ctx.userId,
+                businessId: ctx.businessId,
+                branchId,
+                snapshotId: activeSnap,
+              })
+              return mapCachedToProduct(cached, stockMap.get(productId))
+            }
+            return undefined
+          }
+        }
+
+        throw err
+      }
+    }
     const product = products.find((entry) => entry.id === productId)
     return product ? cloneProduct(product) : undefined
   },
 
   async createProduct(draft) {
+    if (!isExplicitDemo()) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Offline mode: Product creation requires an active server connection.')
+      }
+      const response = await apiClient.post<ProductDTO>('/products', {
+        name: draft.name.trim(),
+        sku: draft.sku.trim(),
+        barcode: draft.barcode?.trim() || null,
+        categoryId: draft.categoryId || null,
+        description: draft.description?.trim() || null,
+        imageUrl: draft.imageUrl || null,
+        unit: draft.unit,
+        purchasePriceMinor: Math.round(draft.purchasePrice * 100),
+        sellingPriceMinor: Math.round(draft.sellingPrice * 100),
+        lowStockThreshold: draft.lowStockThreshold,
+        trackInventory: draft.trackInventory,
+      })
+      syncCatalog().catch(() => {})
+      const mapped = mapDtoToProduct(response)
+      initializeProduct(mapped)
+      return mapped
+    }
+
     validateUniqueCodes(draft)
     const now = new Date().toISOString()
     const product: Product = { ...draft, id: createId(), createdAt: now, updatedAt: now }
@@ -61,6 +236,29 @@ export const productService: ProductService = {
   },
 
   async updateProduct(productId, draft) {
+    if (!isExplicitDemo()) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Offline mode: Product updates require an active server connection.')
+      }
+      const response = await apiClient.patch<ProductDTO>(`/products/${productId}`, {
+        name: draft.name.trim(),
+        sku: draft.sku.trim(),
+        barcode: draft.barcode?.trim() || null,
+        categoryId: draft.categoryId || null,
+        description: draft.description?.trim() || null,
+        imageUrl: draft.imageUrl || null,
+        unit: draft.unit,
+        purchasePriceMinor: Math.round(draft.purchasePrice * 100),
+        sellingPriceMinor: Math.round(draft.sellingPrice * 100),
+        lowStockThreshold: draft.lowStockThreshold,
+        trackInventory: draft.trackInventory,
+        status: draft.status,
+        expectedVersion: draft.version,
+      })
+      syncCatalog().catch(() => {})
+      return mapDtoToProduct(response)
+    }
+
     const existing = findProduct(productId)
     validateUniqueCodes(draft, productId)
     const updated: Product = { ...existing, ...draft, stockQuantity: existing.trackInventory ? getProductStock(existing.id) : draft.stockQuantity, id: existing.id, createdAt: existing.createdAt, updatedAt: new Date().toISOString() }
@@ -69,6 +267,19 @@ export const productService: ProductService = {
   },
 
   async archiveProduct(productId) {
+    if (!isExplicitDemo()) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Offline mode: Archiving products requires an active server connection.')
+      }
+      await apiClient.delete(`/products/${productId}`)
+      syncCatalog().catch(() => {})
+      const updated = await this.getProductById(productId)
+      if (!updated) {
+        throw new Error('Product not found after archiving.')
+      }
+      return updated
+    }
+
     const existing = findProduct(productId)
     const updated = { ...existing, status: 'archived' as const, updatedAt: new Date().toISOString() }
     products = products.map((product) => product.id === productId ? updated : product)
@@ -76,6 +287,15 @@ export const productService: ProductService = {
   },
 
   async restoreProduct(productId) {
+    if (!isExplicitDemo()) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Offline mode: Restoring products requires an active server connection.')
+      }
+      const response = await apiClient.patch<ProductDTO>(`/products/${productId}`, { status: 'active' })
+      syncCatalog().catch(() => {})
+      return mapDtoToProduct(response)
+    }
+
     const existing = findProduct(productId)
     const updated = { ...existing, status: 'active' as const, updatedAt: new Date().toISOString() }
     products = products.map((product) => product.id === productId ? updated : product)

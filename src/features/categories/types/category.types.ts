@@ -22,6 +22,7 @@ export interface Category {
   color: CategoryColor
   icon: CategoryIconName
   status: CategoryStatus
+  version?: number
   createdAt: string
   updatedAt: string
 }
@@ -30,6 +31,11 @@ export interface CategoryWithStats extends Category {
   productCount: number
   activeProductCount: number
   totalStockQuantity: number
+  // Offline caching metadata
+  isCached?: boolean
+  isStale?: boolean
+  cachedAt?: string
+  cachedSnapshotId?: string
 }
 
 export type CategoryDraft = Omit<Category, 'id' | 'createdAt' | 'updatedAt'>

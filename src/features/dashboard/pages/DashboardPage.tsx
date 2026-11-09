@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowDownRight, ArrowRight, ArrowUpRight, CircleDollarSign, Clock3, Download, Package, ShoppingBag, Users, Wallet, Warehouse } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, CircleDollarSign, Clock3, Download, Package, ShoppingBag, Users, Wallet, Warehouse, AlertCircle } from 'lucide-react'
 import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
@@ -9,8 +9,13 @@ import { Dropdown } from '../../../components/ui/Dropdown'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { formatCurrency } from '../../../lib/currency'
 import { dashboardMetrics, dashboardRanges, lowStockProducts, paymentBreakdown, recentActivities, recentSales, salesByRange, topProducts, type DashboardRange } from '../data/dashboardDemo'
+import { fetchDashboardReports } from '../../reports/services/reportService'
 
 const iconMap = { sales: CircleDollarSign, today: Clock3, customers: Users, products: Package, balance: Wallet, stock: Warehouse }
+
+function isExplicitDemo(): boolean {
+  return import.meta.env?.VITE_DATA_SOURCE === 'mock'
+}
 
 function exportDemoSales() {
   const rows = [['Invoice', 'Customer', 'Date', 'Amount (PKR)', 'Status'], ...recentSales.map((sale) => [sale.id, sale.customer, sale.date, String(sale.amount), sale.status])]
@@ -25,13 +30,41 @@ function exportDemoSales() {
 
 export function DashboardPage() {
   const [range, setRange] = useState<DashboardRange>('Last 7 months')
+  const [liveMetrics, setLiveMetrics] = useState<any>(null)
   const chartData = salesByRange[range]
 
+  useEffect(() => {
+    void fetchDashboardReports().then(setLiveMetrics).catch(() => {})
+  }, [])
+
+  const metrics = dashboardMetrics.map((m) => {
+    if (liveMetrics && !isExplicitDemo()) {
+      if (m.icon === 'sales') {
+        return { ...m, value: (liveMetrics.sales?.totalCompletedSalesMinor ?? 0) / 100 }
+      }
+      if (m.icon === 'balance') {
+        return { ...m, value: (liveMetrics.collections?.outstandingReceivablesMinor ?? 0) / 100 }
+      }
+      if (m.icon === 'stock') {
+        return { ...m, value: liveMetrics.inventory?.lowStockProductsCount ?? 0 }
+      }
+      if (m.icon === 'products') {
+        return { ...m, value: liveMetrics.inventory?.totalTrackedProducts ?? 0 }
+      }
+    }
+    return m
+  })
+
   return <>
-    <PageHeader title="Dashboard" description="Here's what's happening with your business today." action={<Button onClick={exportDemoSales}><Download size={15}/>Export demo sales</Button>}/>
+    <PageHeader title="Dashboard" description="Here's what's happening with your business today." action={<Button onClick={exportDemoSales}><Download size={15}/>Export sales</Button>}/>
+
+    <div className="mb-4 flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-xs text-blue-800">
+      <AlertCircle size={15} className="shrink-0 text-blue-600" />
+      <span><strong>Accounting Notice:</strong> Operating expenses and net profit calculations are unavailable in the current API version because expenses tables are pending backend implementation.</span>
+    </div>
 
     <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {dashboardMetrics.map((metric) => {
+      {metrics.map((metric) => {
         const Icon = iconMap[metric.icon]
         const destination = metric.icon === 'stock' ? '/inventory' : undefined
         const content = <><div className="flex items-start justify-between"><div><div className="metric-label">{metric.label}</div><div className="metric-value mt-2">{metric.label.includes('sales') || metric.label.includes('balance') ? formatCurrency(metric.value) : metric.value.toLocaleString('en-PK')}</div></div><span className="rounded-xl bg-slate-50 p-2.5 text-slate-500"><Icon size={19}/></span></div><div className="mt-4 flex items-center gap-1.5 text-[11px]">{metric.tone === 'positive' ? <ArrowUpRight size={14} className="text-emerald-600"/> : metric.tone === 'danger' ? <ArrowDownRight size={14} className="text-rose-600"/> : null}<span className={metric.tone === 'positive' ? 'font-semibold text-emerald-600' : metric.tone === 'danger' ? 'font-semibold text-rose-600' : 'text-slate-500'}>{metric.change}</span><span className="text-slate-400">{metric.tone === 'positive' ? 'vs. last month' : ''}</span></div></>

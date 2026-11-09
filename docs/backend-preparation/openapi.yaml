@@ -1,0 +1,2556 @@
+openapi: 3.1.0
+info:
+  title: Northstar POS — Cloudflare Workers API
+  version: 1.0.0
+  description: >
+    Production RESTful API specifications for the Northstar POS platform,
+    engineered for Cloudflare Workers, Cloudflare D1, and Cloudflare R2.
+    All monetary amounts are expressed in integer minor currency units (paise).
+servers:
+  - url: https://pos.northstarmarket.pk/api/v1
+    description: Production Environment
+  - url: https://staging-api.northstarmarket.pk/api/v1
+    description: Staging Environment
+  - url: http://localhost:8787/api/v1
+    description: Local Development Environment
+
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: __session
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    BusinessIdHeader:
+      name: X-Business-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Target Business Context ID
+    BranchIdHeader:
+      name: X-Branch-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Target Branch Context ID
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Stable UUIDv4 token for idempotent mutations
+
+  schemas:
+    StandardMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 50
+        totalCount:
+          type: integer
+          example: 120
+        totalPages:
+          type: integer
+          example: 3
+        hasNextPage:
+          type: boolean
+          example: true
+
+    ErrorDetail:
+      type: object
+      properties:
+        code:
+          type: string
+          example: INSUFFICIENT_STOCK
+        message:
+          type: string
+          example: Insufficient inventory on hand.
+        details:
+          type: object
+          additionalProperties: true
+
+    ErrorEnvelope:
+      type: object
+      required:
+        - success
+        - error
+        - requestId
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+        requestId:
+          type: string
+          example: req_01hgb890123
+
+    CategoryDTO:
+      type: object
+      required:
+        - id
+        - businessId
+        - name
+        - slug
+        - displayOrder
+        - status
+        - productCount
+        - activeProductCount
+        - totalStockQuantity
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        businessId:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+        displayOrder:
+          type: integer
+        status:
+          type: string
+          enum: [active, archived]
+        productCount:
+          type: integer
+        activeProductCount:
+          type: integer
+        totalStockQuantity:
+          type: number
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    CreateCategoryRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+        displayOrder:
+          type: integer
+
+    UpdateCategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+        displayOrder:
+          type: integer
+        status:
+          type: string
+          enum: [active, archived]
+
+    ReplaceCategoryRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+        displayOrder:
+          type: integer
+          default: 0
+        status:
+          type: string
+          enum: [active, archived]
+          default: active
+
+    ProductDTO:
+      type: object
+      required:
+        - id
+        - businessId
+        - sku
+        - name
+        - unit
+        - purchasePriceMinor
+        - sellingPriceMinor
+        - stockQuantity
+        - status
+      properties:
+        id:
+          type: string
+        businessId:
+          type: string
+        sku:
+          type: string
+        barcode:
+          type: string
+          nullable: true
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        categoryName:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        unit:
+          type: string
+          enum: [piece, kg, gram, liter, meter, box, pack, dozen]
+        purchasePriceMinor:
+          type: integer
+          description: Moving weighted average unit cost in paise
+          example: 12000
+        sellingPriceMinor:
+          type: integer
+          description: Retail selling price in paise
+          example: 15000
+        stockQuantity:
+          type: number
+          example: 45.5
+        lowStockThreshold:
+          type: number
+          example: 10
+        trackInventory:
+          type: boolean
+          example: true
+        status:
+          type: string
+          enum: [active, archived]
+
+    CreateProductRequest:
+      type: object
+      required:
+        - name
+        - sku
+        - unit
+        - purchasePriceMinor
+        - sellingPriceMinor
+      properties:
+        name:
+          type: string
+        sku:
+          type: string
+        barcode:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        unit:
+          type: string
+          enum: [piece, kg, gram, liter, meter, box, pack, dozen]
+        purchasePriceMinor:
+          type: integer
+        sellingPriceMinor:
+          type: integer
+        lowStockThreshold:
+          type: number
+          default: 5.0
+        trackInventory:
+          type: boolean
+          default: true
+
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        sku:
+          type: string
+        barcode:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        unit:
+          type: string
+          enum: [piece, kg, gram, liter, meter, box, pack, dozen]
+        purchasePriceMinor:
+          type: integer
+        sellingPriceMinor:
+          type: integer
+        lowStockThreshold:
+          type: number
+        trackInventory:
+          type: boolean
+        status:
+          type: string
+          enum: [active, archived]
+
+    ReplaceProductRequest:
+      type: object
+      required:
+        - name
+        - sku
+        - unit
+        - purchasePriceMinor
+        - sellingPriceMinor
+      properties:
+        name:
+          type: string
+        sku:
+          type: string
+        barcode:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        unit:
+          type: string
+          enum: [piece, kg, gram, liter, meter, box, pack, dozen]
+        purchasePriceMinor:
+          type: integer
+        sellingPriceMinor:
+          type: integer
+        lowStockThreshold:
+          type: number
+          default: 5.0
+        trackInventory:
+          type: boolean
+          default: true
+        status:
+          type: string
+          enum: [active, archived]
+          default: active
+
+    CreateSaleItemRequest:
+      type: object
+      required:
+        - productId
+        - quantity
+        - unitPriceMinor
+      properties:
+        productId:
+          type: string
+        quantity:
+          type: number
+          example: 2
+        unitPriceMinor:
+          type: integer
+          example: 15000
+        discountMinor:
+          type: integer
+          default: 0
+          example: 500
+
+    CreateSalePaymentRequest:
+      type: object
+      required:
+        - method
+        - amountMinor
+      properties:
+        method:
+          type: string
+          enum: [cash, card, bank-transfer, credit]
+        amountMinor:
+          type: integer
+          example: 29500
+        reference:
+          type: string
+          nullable: true
+
+    CreateSaleRequest:
+      type: object
+      required:
+        - customerId
+        - items
+        - payments
+        - subtotalMinor
+        - totalAmountMinor
+      properties:
+        customerId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateSaleItemRequest'
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateSalePaymentRequest'
+        subtotalMinor:
+          type: integer
+          example: 30000
+        discountType:
+          type: string
+          enum: [fixed, percent]
+          default: fixed
+        discountValue:
+          type: number
+          default: 0
+        discountMinor:
+          type: integer
+          default: 500
+        totalAmountMinor:
+          type: integer
+          example: 29500
+        amountPaidMinor:
+          type: integer
+          example: 29500
+
+    SaleDTO:
+      type: object
+      required:
+        - id
+        - saleNumber
+        - receiptNumber
+        - invoiceNumber
+        - customerId
+        - totalAmountMinor
+        - amountPaidMinor
+        - status
+        - businessDateKey
+        - createdAt
+      properties:
+        id:
+          type: string
+        saleNumber:
+          type: string
+        receiptNumber:
+          type: string
+        invoiceNumber:
+          type: string
+        customerId:
+          type: string
+        subtotalMinor:
+          type: integer
+        discountMinor:
+          type: integer
+        taxMinor:
+          type: integer
+        totalAmountMinor:
+          type: integer
+        amountPaidMinor:
+          type: integer
+        remainingBalanceMinor:
+          type: integer
+        status:
+          type: string
+          enum: [draft, completed, voided, partially_returned, returned]
+        businessDateKey:
+          type: string
+          example: "2026-11-08"
+        createdAt:
+          type: string
+
+    InvoiceDTO:
+      type: object
+      required:
+        - id
+        - invoiceNumber
+        - saleId
+        - customerId
+        - totalAmountMinor
+        - paidAmountMinor
+        - remainingAmountMinor
+        - paymentStatus
+        - status
+        - businessDateKey
+        - createdAt
+      properties:
+        id:
+          type: string
+        businessId:
+          type: string
+        branchId:
+          type: string
+        invoiceNumber:
+          type: string
+        saleId:
+          type: string
+        customerId:
+          type: string
+        customerName:
+          type: string
+        businessDateKey:
+          type: string
+        totalAmountMinor:
+          type: integer
+        paidAmountMinor:
+          type: integer
+        remainingAmountMinor:
+          type: integer
+        paymentStatus:
+          type: string
+          enum: [paid, partial, unpaid]
+        status:
+          type: string
+          enum: [active, voided]
+        createdAt:
+          type: string
+
+    CustomerPaymentDTO:
+      type: object
+      required:
+        - id
+        - receiptNumber
+        - customerId
+        - amountMinor
+        - unallocatedAmountMinor
+        - source
+        - businessDateKey
+        - receivedBy
+        - receivedAt
+        - createdAt
+      properties:
+        id:
+          type: string
+        businessId:
+          type: string
+        branchId:
+          type: string
+        receiptNumber:
+          type: string
+        customerId:
+          type: string
+        customerName:
+          type: string
+        amountMinor:
+          type: integer
+        unallocatedAmountMinor:
+          type: integer
+        source:
+          type: string
+          enum: [pos_checkout, manual, online]
+        businessDateKey:
+          type: string
+        receivedBy:
+          type: string
+        receivedAt:
+          type: string
+        createdAt:
+          type: string
+
+    CreateCustomerPaymentRequest:
+      type: object
+      required:
+        - customerId
+        - amountMinor
+        - paymentMethods
+      properties:
+        branchId:
+          type: string
+        customerId:
+          type: string
+        amountMinor:
+          type: integer
+        paymentMethods:
+          type: array
+          items:
+            type: object
+            required:
+              - method
+              - amountMinor
+            properties:
+              method:
+                type: string
+                enum: [cash, card, bank_transfer, digital_wallet, other]
+              amountMinor:
+                type: integer
+              reference:
+                type: string
+        allocations:
+          type: array
+          items:
+            type: object
+            required:
+              - invoiceId
+              - amountMinor
+            properties:
+              invoiceId:
+                type: string
+              amountMinor:
+                type: integer
+        notes:
+          type: string
+
+    CustomerLedgerEntryDTO:
+      type: object
+      required:
+        - id
+        - customerId
+        - type
+        - referenceId
+        - referenceNumber
+        - description
+        - debitMinor
+        - creditMinor
+        - balanceMinor
+        - businessDateKey
+        - createdAt
+      properties:
+        id:
+          type: string
+        customerId:
+          type: string
+        type:
+          type: string
+          enum: [opening, invoice, payment, credit_note, void, adjustment]
+        referenceId:
+          type: string
+        referenceNumber:
+          type: string
+        description:
+          type: string
+        debitMinor:
+          type: integer
+        creditMinor:
+          type: integer
+        balanceMinor:
+          type: integer
+        businessDateKey:
+          type: string
+        createdAt:
+          type: string
+
+paths:
+  /auth/sign-in:
+    post:
+      summary: User Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Successful authentication
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: __session=token; HttpOnly; Secure; SameSite=Lax
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /categories:
+    get:
+      summary: List Categories
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, all]
+        - name: parentId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of categories with statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CategoryDTO'
+                  requestId:
+                    type: string
+    post:
+      summary: Create Category
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Created category
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/CategoryDTO'
+
+  /categories/{id}:
+    get:
+      summary: Get Category by ID
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Category detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/CategoryDTO'
+        '404':
+          description: Category not found
+    put:
+      summary: Replace Category (Full Replacement)
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceCategoryRequest'
+      responses:
+        '200':
+          description: Replaced category
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/CategoryDTO'
+    patch:
+      summary: Update Category
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCategoryRequest'
+      responses:
+        '200':
+          description: Updated category
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/CategoryDTO'
+    delete:
+      summary: Soft-archive Category
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archived category status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      status:
+                        type: string
+                        example: archived
+
+  /products:
+    get:
+      summary: List Products
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: sku
+          in: query
+          schema:
+            type: string
+        - name: barcode
+          in: query
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, all]
+        - name: lowStock
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [name, sku, selling_price, purchase_price, stock, created_at, updated_at]
+            default: name
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: List of products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductDTO'
+                  meta:
+                    $ref: '#/components/schemas/StandardMeta'
+                  requestId:
+                    type: string
+    post:
+      summary: Create Product
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Created product
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProductDTO'
+
+  /products/{id}:
+    get:
+      summary: Get Product by ID
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product detail with stock and category
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProductDTO'
+        '404':
+          description: Product not found
+    put:
+      summary: Replace Product (Full Replacement)
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceProductRequest'
+      responses:
+        '200':
+          description: Replaced product
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProductDTO'
+    patch:
+      summary: Update Product
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: Updated product
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProductDTO'
+    delete:
+      summary: Soft-archive Product
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archived product status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      status:
+                        type: string
+                        example: archived
+
+  /sales:
+    post:
+      summary: Complete POS Checkout
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSaleRequest'
+      responses:
+        '201':
+          description: Sale completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SaleDTO'
+                  requestId:
+                    type: string
+        '409':
+          description: Idempotency conflict or concurrent update error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: Domain business rule failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    get:
+      summary: List Sales
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: startDate
+          in: query
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of sales
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SaleDTO'
+                  meta:
+                    $ref: '#/components/schemas/StandardMeta'
+
+  /sales/{id}:
+    get:
+      summary: Get Sale Detail
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sale details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/SaleDTO'
+
+  /sales/{id}/void:
+    post:
+      summary: Void Sale
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Sale voided successfully
+
+  /sales/{id}/invoice:
+    get:
+      summary: Get Invoice for Sale
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Invoice record
+
+  /invoices:
+    get:
+      summary: List Invoices
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - name: paymentStatus
+          in: query
+          schema:
+            type: string
+            enum: [paid, partial, unpaid]
+        - name: customerId
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Paginated invoices list
+
+  /invoices/{id}:
+    get:
+      summary: Get Invoice Detail
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Invoice details with items and allocations
+
+  /invoices/{id}/sale:
+    get:
+      summary: Get Associated Sale for Invoice
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Associated sale record
+
+  /customer-payments:
+    get:
+      summary: List Customer Payments
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - name: customerId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated payments list
+    post:
+      summary: Record Customer Payment
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerPaymentRequest'
+      responses:
+        '201':
+          description: Payment recorded successfully
+
+  /customer-payments/{id}:
+    get:
+      summary: Get Payment Detail
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Payment details with allocations
+
+  /customer-payments/{id}/allocations:
+    get:
+      summary: Get Payment Allocations
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of allocations
+    post:
+      summary: Allocate Advance Credit
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - allocations
+              properties:
+                allocations:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - invoiceId
+                      - amountMinor
+                    properties:
+                      invoiceId:
+                        type: string
+                      amountMinor:
+                        type: integer
+      responses:
+        '200':
+          description: Advance allocated successfully
+
+  /customers/{customerId}/ledger:
+    get:
+      summary: Get Customer Ledger Statement
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: customerId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [opening, invoice, payment, credit_note, void, adjustment]
+      responses:
+        '200':
+          description: Customer ledger statement with running balance
+
+  /customers/{customerId}/ledger/summary:
+    get:
+      summary: Get Customer Financial Summary
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: customerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Customer financial summary and credit limit metrics
+
+
+
+  /suppliers:
+    get:
+      summary: List Authorized Active Suppliers
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Paged list of active suppliers
+
+  /suppliers/{id}:
+    get:
+      summary: Get Single Supplier by ID
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Supplier details
+
+  /inventory/balances:
+    get:
+      summary: List Inventory Balances
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - name: branchId
+          in: query
+          schema:
+            type: string
+        - name: productId
+          in: query
+          schema:
+            type: string
+        - name: lowStock
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Inventory balances across authorized branches
+
+  /inventory/balances/{productId}:
+    get:
+      summary: Get Stock Balances for a Product
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product stock levels broken down by authorized branch
+
+  /inventory/movements:
+    get:
+      summary: List Stock Movements Audit Trail
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: branchId
+          in: query
+          schema:
+            type: string
+        - name: productId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paged stock audit movements
+
+  /inventory/adjustments:
+    post:
+      summary: Record Manual Stock Adjustment
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - productId
+                - type
+                - quantityChange
+                - reason
+              properties:
+                branchId:
+                  type: string
+                productId:
+                  type: string
+                type:
+                  type: string
+                  enum: [adjustment_in, adjustment_out]
+                quantityChange:
+                  type: number
+                reason:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        '201':
+          description: Stock adjustment created and audit movement posted
+        '422':
+          description: Negative stock disallowed
+
+  /inventory/counts:
+    get:
+      summary: List Stock Counts
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Paged stock count sheets
+    post:
+      summary: Create Draft Stock Count Sheet
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - items
+              properties:
+                name:
+                  type: string
+                notes:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - productId
+                      - physicalQuantity
+                    properties:
+                      productId:
+                        type: string
+                      physicalQuantity:
+                        type: number
+      responses:
+        '201':
+          description: Draft stock count sheet initialized without stock mutation
+
+  /inventory/counts/{id}:
+    get:
+      summary: Get Single Stock Count Sheet
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stock count sheet details and variance calculations
+
+  /inventory/counts/{id}/complete:
+    post:
+      summary: Confirm and Complete Physical Stock Count
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stock count finalized, variance adjustments posted to ledger
+
+  /purchases:
+    get:
+      summary: List Purchase Orders
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Paged list of purchases
+    post:
+      summary: Create Draft Purchase Order
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - supplierId
+                - items
+              properties:
+                branchId:
+                  type: string
+                supplierId:
+                  type: string
+                expectedDeliveryDate:
+                  type: string
+                supplierInvoiceNumber:
+                  type: string
+                notes:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - productId
+                      - orderedQuantity
+                      - unitCostMinor
+                    properties:
+                      productId:
+                        type: string
+                      orderedQuantity:
+                        type: number
+                      unitCostMinor:
+                        type: integer
+                      discountMinor:
+                        type: integer
+      responses:
+        '201':
+          description: Draft purchase order created without mutating stock
+
+  /purchases/{id}:
+    get:
+      summary: Get Single Purchase Order
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purchase order details and line items
+    patch:
+      summary: Update Draft Purchase Order
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Draft purchase order updated
+
+  /purchases/{id}/confirm:
+    post:
+      summary: Confirm Purchase Order (Transitions from draft to ordered)
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purchase order confirmed without muting stock
+
+  /purchases/{id}/cancel:
+    post:
+      summary: Cancel Purchase Order
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purchase order cancelled
+        '400':
+          description: Cancellation blocked if items already received or payments allocated
+
+  /purchases/{id}/receipts:
+    post:
+      summary: Receive Inward Goods Against Purchase Order
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - items
+              properties:
+                notes:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - purchaseItemId
+                      - quantityReceived
+                    properties:
+                      purchaseItemId:
+                        type: string
+                      quantityReceived:
+                        type: number
+                      unitCostMinor:
+                        type: integer
+      responses:
+        '201':
+          description: Goods receipt confirmed, stock incremented, MWA cost updated, and supplier ledger credited
+
+  /goods-receipts:
+    get:
+      summary: List Goods Receipts
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Paged list of goods receipts
+
+  /goods-receipts/{id}:
+    get:
+      summary: Get Single Goods Receipt
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Goods receipt details
+
+  /supplier-payments:
+    get:
+      summary: List Supplier Payments
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Paged list of supplier payments
+    post:
+      summary: Disburse Supplier Payment & Advance
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/BranchIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - supplierId
+                - amountMinor
+                - method
+              properties:
+                branchId:
+                  type: string
+                supplierId:
+                  type: string
+                amountMinor:
+                  type: integer
+                method:
+                  type: string
+                  enum: [cash, bank_transfer, card, other]
+                reference:
+                  type: string
+                notes:
+                  type: string
+                allocations:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - purchaseId
+                      - amountMinor
+                    properties:
+                      purchaseId:
+                        type: string
+                      amountMinor:
+                        type: integer
+      responses:
+        '201':
+          description: Supplier payment disbursed, purchase settled, and supplier ledger debited
+
+  /supplier-payments/{id}:
+    get:
+      summary: Get Single Supplier Payment
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Supplier payment details and allocations
+
+  /supplier-payments/{id}/allocations:
+    get:
+      summary: List Allocations for a Supplier Payment
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Allocations list
+    post:
+      summary: Allocate Unallocated Advance from Supplier Payment to Purchase Bills
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - allocations
+              properties:
+                allocations:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - purchaseId
+                      - amountMinor
+                    properties:
+                      purchaseId:
+                        type: string
+                      amountMinor:
+                        type: integer
+      responses:
+        '200':
+          description: Advance allocated to purchase bills without duplicating ledger entries
+
+  /suppliers/{supplierId}/ledger:
+    get:
+      summary: Get Supplier Ledger Statement
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: supplierId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [opening, bill, payment, debit_note, adjustment]
+      responses:
+        '200':
+          description: Supplier ledger statement with running balances and opening/closing calculations
+
+  /suppliers/{supplierId}/ledger/summary:
+    get:
+      summary: Get Supplier Financial Summary
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: supplierId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Supplier financial metrics including total billed, total paid, and open payables
+
+  /files:
+    post:
+      summary: Upload file to Cloudflare R2
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, category]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                category:
+                  type: string
+                  enum: [product_image, business_logo, invoice_pdf, receipt_attachment, purchase_document, supplier_document, report_export]
+                relatedType:
+                  type: string
+                  enum: [product, business, branch, sale, invoice, purchase, goods_receipt, supplier, customer, report]
+                relatedId:
+                  type: string
+                branchId:
+                  type: string
+      responses:
+        '201':
+          description: File metadata created and payload uploaded to R2
+    get:
+      summary: List authorized files
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: relatedType
+          in: query
+          schema:
+            type: string
+        - name: relatedId
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Paginated file metadata list
+
+  /files/{id}:
+    get:
+      summary: Get file metadata
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File metadata
+    delete:
+      summary: Safely delete file from R2 and mark deleted in D1 (idempotent)
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File deletion confirmation
+
+  /files/{id}/content:
+    get:
+      summary: Stream or download file payload from R2
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Binary file stream with security headers
+
+  /reports/dashboard:
+    get:
+      summary: Executive Dashboard Metrics
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Executive dashboard aggregates for sales, collections, purchases, and inventory
+
+  /reports/sales/summary:
+    get:
+      summary: Detailed Sales Summary Report
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Aggregated sales totals, discounts, taxes, and counts
+
+  /reports/sales/trends:
+    get:
+      summary: Sales Over Time Trends
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [daily, monthly]
+      responses:
+        '200':
+          description: Time-series sales data points
+
+  /reports/sales/by-product:
+    get:
+      summary: Sales Performance by Product
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Products ranked by sales revenue and margins
+
+  /reports/sales/by-category:
+    get:
+      summary: Sales Performance by Category
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Categories ranked by sales revenue
+
+  /reports/payments/summary:
+    get:
+      summary: Collections Summary Report
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Payment collections breakdown
+
+  /reports/payments/by-method:
+    get:
+      summary: Collections Grouped by Payment Method
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Volume and percentage share per payment method
+
+  /reports/purchases/summary:
+    get:
+      summary: Purchases Summary Report
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purchases volume, paid amounts, and liabilities
+
+  /reports/purchases/trends:
+    get:
+      summary: Purchases Over Time Trends
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [daily, monthly]
+      responses:
+        '200':
+          description: Time-series procurement data points
+
+  /reports/suppliers/payables:
+    get:
+      summary: Supplier Payables Summary
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Suppliers with open balances and unallocated advances
+
+  /reports/inventory/summary:
+    get:
+      summary: Inventory Stock & Valuation Summary
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stock level statistics and perpetual inventory valuation
+
+  /reports/inventory/movements:
+    get:
+      summary: Stock Movements Audit Trail
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: productId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated stock audit log
+
+  /reports/inventory/low-stock:
+    get:
+      summary: Low Stock Products Alert Report
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Products currently at or below their reorder threshold
+
+  /reports/inventory/valuation:
+    get:
+      summary: Detailed Inventory Valuation Report
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Line-by-line stock valuation per product
+
+  /reports/customers/receivables:
+    get:
+      summary: Customer Receivables Summary
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+      responses:
+        '200':
+          description: Customers with open receivables balances
+
+  /reports/export:
+    get:
+      summary: Export Reports to Sanitized CSV
+      security:
+        - SessionCookie: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BusinessIdHeader'
+        - name: reportType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sales, products, payments, inventory, customers, suppliers]
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+        - name: toDate
+          in: query
+          schema:
+            type: string
+        - name: branchId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Downloadable CSV document with formula injection escaping
+          content:
+            text/csv:
+              schema:
+                type: string

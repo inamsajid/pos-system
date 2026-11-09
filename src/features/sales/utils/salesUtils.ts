@@ -1,8 +1,33 @@
 import type { CheckoutSale } from '../../pos/types/checkout.types'
 import { getInvoicePayments } from '../../payments/services/paymentService'
-export type SalePaymentStatus='paid'|'partial'|'unpaid'
-export function paidAmount(sale:CheckoutSale){return Math.round((getInvoicePayments(sale.id).reduce((sum,p)=>sum+p.allocations.filter(a=>a.saleId===sale.id).reduce((n,a)=>n+a.amount,0),0)+Number.EPSILON)*100)/100}
-export function getPaymentStatus(sale:CheckoutSale):SalePaymentStatus{const paid=paidAmount(sale);if(paid>=sale.totalAmount)return'paid';if(paid>0)return'partial';return'unpaid'}
-export function outstanding(sale:CheckoutSale){return Math.max(0,Math.round((sale.totalAmount-paidAmount(sale)+Number.EPSILON)*100)/100)}
-export function getPaymentMethods(sale:CheckoutSale){return [...new Set(getInvoicePayments(sale.id).flatMap(p=>p.methodBreakdown.map(m=>m.method)))]}
-export function saleMatchesDate(sale:CheckoutSale,range:string,from:string,to:string){if(range==='all')return true;const date=new Date(sale.createdAt);const today=new Date();today.setHours(0,0,0,0);const start=new Date(today);if(range==='today'){}else if(range==='yesterday')start.setDate(start.getDate()-1);else if(range==='7')start.setDate(start.getDate()-6);else if(range==='30')start.setDate(start.getDate()-29);else if(range==='month')start.setDate(1);else if(range==='last-month'){start.setMonth(start.getMonth()-1,1);const end=new Date(today.getFullYear(),today.getMonth(),0,23,59,59,999);return date>=start&&date<=end}else if(range==='custom'){return(!from||date>=new Date(`${from}T00:00:00`))&&(!to||date<=new Date(`${to}T23:59:59.999`))}return date>=start}
+import { isWithinBusinessDateRange, getBusinessDatePreset } from '../../../lib/businessDate'
+
+export type SalePaymentStatus = 'paid' | 'partial' | 'unpaid'
+
+export function paidAmount(sale: CheckoutSale) {
+  return Math.round((getInvoicePayments(sale.id).reduce((sum, p) => sum + p.allocations.filter(a => a.saleId === sale.id).reduce((n, a) => n + a.amount, 0), 0) + Number.EPSILON) * 100) / 100
+}
+
+export function getPaymentStatus(sale: CheckoutSale): SalePaymentStatus {
+  const paid = paidAmount(sale)
+  if (paid >= sale.totalAmount) return 'paid'
+  if (paid > 0) return 'partial'
+  return 'unpaid'
+}
+
+export function outstanding(sale: CheckoutSale) {
+  return Math.max(0, Math.round((sale.totalAmount - paidAmount(sale) + Number.EPSILON) * 100) / 100)
+}
+
+export function getPaymentMethods(sale: CheckoutSale) {
+  return [...new Set(getInvoicePayments(sale.id).flatMap(p => p.methodBreakdown.map(m => m.method)))]
+}
+
+export function saleMatchesDate(sale: CheckoutSale, range: string, from: string, to: string) {
+  if (range === 'all') return true
+  if (range === 'custom') {
+    return isWithinBusinessDateRange(sale.createdAt, from, to)
+  }
+  const preset = getBusinessDatePreset(range)
+  return isWithinBusinessDateRange(sale.createdAt, preset.from, preset.to)
+}

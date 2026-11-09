@@ -17,8 +17,15 @@ export interface Product {
   lowStockThreshold: number
   status: ProductStatus
   trackInventory: boolean
+  version?: number
   createdAt: string
   updatedAt: string
+  // Offline caching metadata
+  isCached?: boolean
+  isStale?: boolean
+  cachedAt?: string
+  cachedSnapshotId?: string
+  stockNotice?: string
 }
 
 export type ProductDraft = Omit<Product, 'id' | 'createdAt' | 'updatedAt'>

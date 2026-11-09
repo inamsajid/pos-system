@@ -1,31 +1,29 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { EmptyState } from '../../../components/feedback/EmptyState'
 import { formatCurrency } from '../../../lib/currency'
-import { formatBusinessDate } from '../../../lib/date'
-import { getPayments, getPaymentStatistics, paymentSourceLabel } from '../services/paymentService'
+import { formatBusinessDate, getBusinessDatePreset, isWithinBusinessDateRange } from '../../../lib/businessDate'
+import { getPayments, getPaymentStatistics, paymentSourceLabel, fetchCustomerPayments } from '../services/paymentService'
 import type { CustomerPayment } from '../types/payment.types'
 
 type DateRange = 'all' | 'today' | 'yesterday' | '7' | '30' | 'month' | 'last-month' | 'custom'
 function matchesDateRange(value: string, range: DateRange, from: string, to: string) {
-  const date = new Date(value)
   if (range === 'all') return true
-  if (range === 'custom') return (!from || date >= new Date(`${from}T00:00:00`)) && (!to || date <= new Date(`${to}T23:59:59.999`))
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  if (range === 'today') return date >= today && date < new Date(today.getTime() + 86400000)
-  if (range === 'yesterday') { const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1); return date >= yesterday && date < today }
-  if (range === '7' || range === '30') { const start = new Date(today); start.setDate(today.getDate() - (Number(range) - 1)); return date >= start }
-  if (range === 'month') return date >= new Date(today.getFullYear(), today.getMonth(), 1)
-  const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1)
-  return date >= lastMonthStart && date < new Date(today.getFullYear(), today.getMonth(), 1)
+  if (range === 'custom') return isWithinBusinessDateRange(value, from, to)
+  const preset = getBusinessDatePreset(range)
+  return isWithinBusinessDateRange(value, preset.from, preset.to)
 }
 
 export function PaymentsPage() {
-  const payments = getPayments()
+  const [payments, setPayments] = useState<CustomerPayment[]>(() => getPayments())
   const stats = getPaymentStatistics()
+
+  useEffect(() => {
+    void fetchCustomerPayments().then(setPayments)
+  }, [])
   const [query, setQuery] = useState('')
   const [method, setMethod] = useState('')
   const [source, setSource] = useState('')
@@ -54,7 +52,7 @@ export function PaymentsPage() {
     const csv = rowsToExport.map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'customer-payments.csv'; anchor.click(); URL.revokeObjectURL(url)
   }
-  const actions = (payment: CustomerPayment) => <div className="flex flex-wrap gap-2 text-xs"><Link className="text-blue-600" to={`/payments/${payment.id}`}>View / print</Link>{payment.customerId && <Link className="text-blue-600" to={`/customers/${payment.customerId}`}>Customer</Link>}{payment.allocations[0] && <Link className="text-blue-600" to={`/invoices/${payment.allocations[0].saleId}`}>Invoice</Link>}</div>
+  const actions = (payment: CustomerPayment) => <div className="flex flex-wrap gap-2 text-xs"><Link className="text-blue-600" to={`/payments/${payment.id}`}>View / print</Link>{payment.customerId && payment.customerId !== 'walk-in' && <Link className="text-blue-600" to={`/customers/${payment.customerId}/ledger`}>Ledger</Link>}{payment.customerId && <Link className="text-blue-600" to={`/customers/${payment.customerId}`}>Customer</Link>}{payment.allocations[0] && <Link className="text-blue-600" to={`/invoices/${payment.allocations[0].saleId}`}>Invoice</Link>}</div>
 
   return <><PageHeader title="Payments" description="Manage customer payments, receipts and outstanding collections." action={<div className="flex gap-2"><Button onClick={exportCsv}>Export payments</Button><Link to="/payments/new"><Button variant="primary">Receive payment</Button></Link></div>} />
     <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">{[['Payments received', formatCurrency(stats.totalReceived)], ['Payment transactions', stats.transactions], ['Outstanding receivables', formatCurrency(stats.outstanding)], ['Unallocated advances', formatCurrency(stats.advances)]].map(([label, value]) => <Card key={String(label)} className="p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-bold">{value}</p></Card>)}</div>

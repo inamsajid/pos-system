@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { productService } from '../services/productService'
-import type { Product } from '../types/product.types'
+import type { Product, ProductDraft } from '../types/product.types'
+import { queryClient } from '../../../app/queryClient'
+import { queryKeys } from '../../../api/queryKeys'
 
 export function useProducts() {
   const [products, setProducts] = useState<Product[]>([])
@@ -18,9 +20,59 @@ export function useProducts() {
     }
   }, [])
 
-  // This effect loads the feature repository; updates happen after its async read resolves.
-  // oxlint-disable-next-line react/set-state-in-effect
-  useEffect(() => { void reload() }, [reload])
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    void reload()
+  }, [reload])
 
-  return { products, loading, error, reload }
+  const createProduct = useCallback(
+    async (draft: ProductDraft) => {
+      const created = await productService.createProduct(draft)
+      await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+      return created
+    },
+    [reload]
+  )
+
+  const updateProduct = useCallback(
+    async (id: string, draft: ProductDraft) => {
+      const updated = await productService.updateProduct(id, draft)
+      await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+      return updated
+    },
+    [reload]
+  )
+
+  const archiveProduct = useCallback(
+    async (id: string) => {
+      const archived = await productService.archiveProduct(id)
+      await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+      return archived
+    },
+    [reload]
+  )
+
+  const restoreProduct = useCallback(
+    async (id: string) => {
+      const restored = await productService.restoreProduct(id)
+      await reload()
+      void queryClient.invalidateQueries({ queryKey: queryKeys.products.all })
+      return restored
+    },
+    [reload]
+  )
+
+  return {
+    products,
+    loading,
+    error,
+    reload,
+    createProduct,
+    updateProduct,
+    archiveProduct,
+    restoreProduct,
+  }
 }

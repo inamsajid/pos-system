@@ -1,10 +1,10 @@
-import { getSales } from '../../pos/services/checkoutService'
+import { salesService } from '../../sales/services/salesService'
 import type { CheckoutSale } from '../../pos/types/checkout.types'
 import type { CustomerPayment } from '../../payments/types/payment.types'
-import { getPayments, getOutstandingInvoices } from '../../payments/services/paymentService'
-import { getPurchases } from '../../purchases/services/purchaseService'
-import { getSupplierPayments } from '../../supplier-payments/services/supplierPaymentService'
-import { getInventoryMovements, getInventoryStatistics, getLowStockProducts } from '../../inventory/services/inventoryService'
+import { getOutstandingInvoices, fetchCustomerPayments } from '../../payments/services/paymentService'
+import { fetchPurchases } from '../../purchases/services/purchaseService'
+import { fetchSupplierPayments } from '../../supplier-payments/services/supplierPaymentService'
+import { getInventoryStatistics, getLowStockProducts, fetchInventoryMovements } from '../../inventory/services/inventoryService'
 import { productService } from '../../products/services/productService'
 import { customerService } from '../../customers/services/customerService'
 import { supplierService } from '../../suppliers/services/supplierService'
@@ -12,11 +12,56 @@ import { categoryService } from '../../categories/services/categoryService'
 import { getSupplierLedgerSummary } from '../../suppliers/services/supplierLedgerService'
 import { money } from '../../pos/utils/checkoutCalculations'
 import { businessDateKey, dateInRange, getComparisonRange } from '../utils/reportDateUtils'
+import { apiClient } from '../../../lib/api-client'
 import type { ComparisonMode, DateRange, ReportDataset, ReportFilters, ReportMetric, TrendPoint } from '../types/report.types'
 
+function isExplicitDemo(): boolean {
+  return import.meta.env?.VITE_DATA_SOURCE === 'mock'
+}
+
+export async function fetchDashboardReports() {
+  if (!isExplicitDemo()) {
+    return apiClient.get('/reports/dashboard')
+  }
+  return null
+}
+
+export async function downloadReportCsv(type: string, params: Record<string, string | number | undefined> = {}) {
+  if (!isExplicitDemo()) {
+    const blob = await apiClient.getBlob('/reports/export/csv', { params: { type, ...params } })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${type}-report.csv`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    return
+  }
+}
+
 export async function loadReportDataset(): Promise<ReportDataset> {
-  const [products, customers, suppliers, categories] = await Promise.all([productService.getProducts(), customerService.getCustomers(), supplierService.getSuppliers(), categoryService.getCategories()])
-  return { sales: getSales(), products, customers, suppliers, categories: categories.map(category => ({ id: category.id, name: category.name })), payments: getPayments(), supplierPayments: getSupplierPayments(), purchases: getPurchases(), movements: getInventoryMovements() }
+  const [products, customers, suppliers, categories, sales, payments, supplierPayments, purchases, movements] = await Promise.all([
+    productService.getProducts(),
+    customerService.getCustomers(),
+    supplierService.getSuppliers(),
+    categoryService.getCategories(),
+    salesService.getSales(),
+    fetchCustomerPayments(),
+    fetchSupplierPayments(),
+    fetchPurchases(),
+    fetchInventoryMovements(),
+  ])
+  return {
+    sales,
+    products,
+    customers,
+    suppliers,
+    categories: categories.map(category => ({ id: category.id, name: category.name })),
+    payments,
+    supplierPayments,
+    purchases,
+    movements,
+  }
 }
 export function completedSales(dataset: ReportDataset) { return dataset.sales.filter(sale => sale.status === 'completed') }
 function salePaidById(dataset: ReportDataset) {

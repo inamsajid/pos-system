@@ -1,0 +1,31 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "pos-system-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    "ENVIRONMENT": "local",
+    "TIMEZONE": "Asia/Karachi",
+    "SERVICE_NAME": "pos-system-api",
+    "API_VERSION": "v1"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pos-system-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "pos-system-local-files"
+    }
+  ]
+}
+

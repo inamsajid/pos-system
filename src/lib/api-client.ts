@@ -1,16 +1,36 @@
 import type { ApiErrorResponse } from '../services/api/types'
 
-const baseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
+function getBaseUrl(): string {
+  const envUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '')
+  if (envUrl && (envUrl.startsWith('http://') || envUrl.startsWith('https://'))) {
+    return envUrl
+  }
+  const path = envUrl || '/api/v1'
+  if (typeof window !== 'undefined' && window.location?.origin && window.location.origin !== 'null') {
+    return `${window.location.origin}${path.startsWith('/') ? path : `/${path}`}`
+  }
+  return path
+}
+
+export interface StructuredApiErrorPayload {
+  code?: string
+  message?: string
+  details?: Record<string, unknown>
+}
 
 export class ApiError extends Error {
   readonly status: number
   readonly code?: string
+  readonly details?: Record<string, unknown>
+  readonly requestId?: string
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, details?: Record<string, unknown>, requestId?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.details = details
+    this.requestId = requestId
   }
 }
 
@@ -32,30 +52,169 @@ async function readResponseBody(response: Response): Promise<unknown> {
   return body
 }
 
-export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!baseUrl) throw new Error('VITE_API_BASE_URL is not configured.')
+export interface ApiRequestOptions extends RequestInit {
+  params?: Record<string, string | number | boolean | undefined>
+  requestId?: string
+  responseType?: 'json' | 'blob' | 'text'
+}
 
+export type ContextProvider = () => {
+  userId?: string | null
+  businessId?: string | null
+  branchId?: string | null
+}
+let activeContextProvider: ContextProvider | null = null
+
+export function setApiContextProvider(provider: ContextProvider | null) {
+  activeContextProvider = provider
+}
+
+export function getApiContext(): {
+  userId?: string | null
+  businessId?: string | null
+  branchId?: string | null
+} {
+  if (activeContextProvider) {
+    try {
+      return activeContextProvider()
+    } catch {
+      // safe fallback
+    }
+  }
+  return { userId: null, businessId: null, branchId: null }
+}
+
+export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { params, requestId, responseType = 'json', ...init } = options
   const headers = new Headers(init.headers)
+
+  if (activeContextProvider) {
+    try {
+      const activeCtx = activeContextProvider()
+      if (activeCtx.businessId && !headers.has('X-Business-Id')) {
+        headers.set('X-Business-Id', activeCtx.businessId)
+      }
+      if (activeCtx.branchId && !headers.has('X-Branch-Id')) {
+        headers.set('X-Branch-Id', activeCtx.branchId)
+      }
+    } catch {
+      // Safe fallback if provider fails
+    }
+  }
+
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
-  headers.set('Accept', 'application/json')
+  if (!headers.has('Accept')) {
+    headers.set('Accept', responseType === 'blob' ? '*/*' : 'application/json')
+  }
 
-  const response = await fetch(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`, {
+  const resolvedRequestId = requestId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined)
+  if (resolvedRequestId && !headers.has('X-Request-Id')) {
+    headers.set('X-Request-Id', resolvedRequestId)
+  }
+
+  let finalPath = path.startsWith('/') ? path : `/${path}`
+  if (params) {
+    const searchParams = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== '') {
+        searchParams.append(key, String(value))
+      }
+    }
+    const qs = searchParams.toString()
+    if (qs) {
+      finalPath += `?${qs}`
+    }
+  }
+
+  const url = `${getBaseUrl()}${finalPath}`
+  const response = await fetch(url, {
+    credentials: init.credentials ?? 'include',
     ...init,
     headers,
   })
-  const body = await readResponseBody(response)
 
   if (!response.ok) {
-    const errorBody = body as Partial<ApiErrorResponse> | undefined
-    const message = typeof errorBody?.message === 'string'
-      ? errorBody.message
-      : typeof body === 'string' && body
-        ? body
-        : `Request failed with status ${response.status}`
-    throw new ApiError(message, response.status, errorBody?.code)
+    let message = `Request failed with status ${response.status}`
+    let code: string | undefined
+    let details: Record<string, unknown> | undefined
+
+    const body = await readResponseBody(response)
+    if (body && typeof body === 'object') {
+      const envelope = body as { success?: boolean; error?: StructuredApiErrorPayload; message?: string; code?: string }
+      if (envelope.error && typeof envelope.error === 'object') {
+        message = envelope.error.message || message
+        code = envelope.error.code
+        details = envelope.error.details
+      } else if (typeof envelope.message === 'string') {
+        const legacy = body as Partial<ApiErrorResponse>
+        message = legacy.message || message
+        code = legacy.code
+      }
+    } else if (typeof body === 'string' && body) {
+      message = body
+    }
+
+    const responseRequestId = response.headers.get('x-request-id') || resolvedRequestId
+    throw new ApiError(message, response.status, code, details, responseRequestId)
+  }
+
+  if (responseType === 'blob') {
+    return (await response.blob()) as unknown as T
+  }
+
+  if (responseType === 'text') {
+    return (await response.text()) as unknown as T
+  }
+
+  const body = await readResponseBody(response)
+
+  // If response matches our standard envelope { success: true, data: T }, unwrap it
+  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+    const envelope = body as { success: boolean; data: T }
+    if (envelope.success) {
+      return envelope.data
+    }
   }
 
   return body as T
+}
+
+export const apiClient = {
+  get<T>(path: string, options?: ApiRequestOptions): Promise<T> {
+    return apiRequest<T>(path, { ...options, method: 'GET' })
+  },
+
+  getBlob(path: string, options?: ApiRequestOptions): Promise<Blob> {
+    return apiRequest<Blob>(path, { ...options, method: 'GET', responseType: 'blob' })
+  },
+
+  post<T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T> {
+    return apiRequest<T>(path, {
+      ...options,
+      method: 'POST',
+      body: body !== undefined ? (body instanceof FormData ? body : typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+    })
+  },
+
+  put<T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T> {
+    return apiRequest<T>(path, {
+      ...options,
+      method: 'PUT',
+      body: body !== undefined ? (body instanceof FormData ? body : typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+    })
+  },
+
+  patch<T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T> {
+    return apiRequest<T>(path, {
+      ...options,
+      method: 'PATCH',
+      body: body !== undefined ? (body instanceof FormData ? body : typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+    })
+  },
+
+  delete<T>(path: string, options?: ApiRequestOptions): Promise<T> {
+    return apiRequest<T>(path, { ...options, method: 'DELETE' })
+  },
 }

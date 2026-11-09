@@ -1,0 +1,4 @@
+# Cloudflare Workers Local Development Secrets (.dev.vars)
+# Copy this file to .dev.vars for local testing. Never commit secrets to version control.
+AUTH_SECRET="local-development-secret-only"
+
