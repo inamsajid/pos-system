@@ -21,7 +21,7 @@ export function CreateExpenseModal({ open, onClose, onSuccess, categories, onOpe
 
   const [title, setTitle] = useState('')
   const [categoryId, setCategoryId] = useState('')
-  const [branchId, setBranchId] = useState(activeBranch?.id || 'branch-main')
+  const [branchId, setBranchId] = useState(activeBranch?.id || '')
   const [amountStr, setAmountStr] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<ExpensePaymentMethod>('cash')
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().split('T')[0])
@@ -29,11 +29,13 @@ export function CreateExpenseModal({ open, onClose, onSuccess, categories, onOpe
   const [receiptUrl, setReceiptUrl] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [branchLoadError, setBranchLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     if (activeBranch) {
       setBranchId(activeBranch.id)
     }
+    setBranchLoadError(null)
     void apiClient
       .get<BranchInfo[]>('/branches')
       .then(res => {
@@ -42,7 +44,11 @@ export function CreateExpenseModal({ open, onClose, onSuccess, categories, onOpe
           if (!activeBranch) setBranchId(res[0].id)
         }
       })
-      .catch(() => {})
+      .catch(err => {
+        if (!activeBranch) {
+          setBranchLoadError(err instanceof Error ? err.message : 'Unable to load business branches.')
+        }
+      })
   }, [activeBranch])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -65,7 +71,11 @@ export function CreateExpenseModal({ open, onClose, onSuccess, categories, onOpe
       return
     }
 
-    const selectedBranch = branchId || activeBranch?.id || 'branch-main'
+    const selectedBranch = branchId || activeBranch?.id || ''
+    if (!selectedBranch) {
+      setError('Please select a branch before recording this expense.')
+      return
+    }
 
     try {
       setIsSubmitting(true)
@@ -124,9 +134,12 @@ export function CreateExpenseModal({ open, onClose, onSuccess, categories, onOpe
                   {activeBranch.name} ({activeBranch.branch_code})
                 </option>
               ) : (
-                <option value="branch-main">Main Store</option>
+                <option value="">Select branch…</option>
               )}
             </select>
+            {branchLoadError && !activeBranch && branches.length === 0 && (
+              <p className="mt-1 text-[11px] text-rose-600">{branchLoadError}</p>
+            )}
           </div>
 
           <div>

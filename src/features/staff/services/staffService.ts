@@ -79,18 +79,14 @@ let mockInvitations: StaffInvitation[] = []
 export const staffService = {
   async getStaff(filters: StaffFilters = {}): Promise<StaffMember[]> {
     if (!isExplicitDemo()) {
-      try {
-        const query = new URLSearchParams()
-        if (filters.search) query.set('search', filters.search)
-        if (filters.role) query.set('role', filters.role)
-        if (filters.branchId) query.set('branchId', filters.branchId)
-        if (filters.isActive !== undefined) query.set('isActive', String(filters.isActive))
+      const query = new URLSearchParams()
+      if (filters.search) query.set('search', filters.search)
+      if (filters.role) query.set('role', filters.role)
+      if (filters.branchId) query.set('branchId', filters.branchId)
+      if (filters.isActive !== undefined) query.set('isActive', String(filters.isActive))
 
-        const qs = query.toString()
-        return await apiClient.get<StaffMember[]>(`/staff${qs ? `?${qs}` : ''}`)
-      } catch (err) {
-        console.warn('Backend staff API failed, falling back to mock:', err)
-      }
+      const qs = query.toString()
+      return apiClient.get<StaffMember[]>(`/staff${qs ? `?${qs}` : ''}`)
     }
 
     let result = [...mockStaff]
@@ -117,11 +113,7 @@ export const staffService = {
 
   async getStaffMember(id: string): Promise<StaffMember> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.get<StaffMember>(`/staff/${id}`)
-      } catch (err) {
-        console.warn('Backend staff get failed, using mock:', err)
-      }
+      return apiClient.get<StaffMember>(`/staff/${id}`)
     }
     const member = mockStaff.find(m => m.id === id)
     if (!member) throw new Error('Staff member not found.')
@@ -130,11 +122,7 @@ export const staffService = {
 
   async inviteStaff(draft: InviteStaffDraft): Promise<StaffInvitation> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<StaffInvitation>('/staff/invitations', draft)
-      } catch (err) {
-        console.warn('Backend staff invite failed, using mock:', err)
-      }
+      return apiClient.post<StaffInvitation>('/staff/invitations', draft)
     }
 
     const token = `inv-tok-${Date.now()}`
@@ -159,34 +147,22 @@ export const staffService = {
 
   async getInvitations(): Promise<StaffInvitation[]> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.get<StaffInvitation[]>('/staff/invitations')
-      } catch (err) {
-        console.warn('Backend staff invitations get failed, using mock:', err)
-      }
+      return apiClient.get<StaffInvitation[]>('/staff/invitations')
     }
     return [...mockInvitations]
   },
 
   async revokeInvitation(id: string): Promise<void> {
     if (!isExplicitDemo()) {
-      try {
-        await apiClient.post(`/staff/invitations/${id}/revoke`, {})
-        return
-      } catch (err) {
-        console.warn('Backend staff revoke invite failed, using mock:', err)
-      }
+      await apiClient.post(`/staff/invitations/${id}/revoke`, {})
+      return
     }
     mockInvitations = mockInvitations.filter(i => i.id !== id)
   },
 
   async updateRole(memberId: string, role: StaffRole): Promise<StaffMember> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.patch<StaffMember>(`/staff/${memberId}/role`, { role })
-      } catch (err) {
-        console.warn('Backend staff role update failed, using mock:', err)
-      }
+      return apiClient.patch<StaffMember>(`/staff/${memberId}/role`, { role })
     }
 
     const index = mockStaff.findIndex(m => m.id === memberId)
@@ -197,11 +173,7 @@ export const staffService = {
 
   async updateBranches(memberId: string, branchIds: string[]): Promise<StaffMember> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.put<StaffMember>(`/staff/${memberId}/branches`, { branchIds })
-      } catch (err) {
-        console.warn('Backend staff branches update failed, using mock:', err)
-      }
+      return apiClient.put<StaffMember>(`/staff/${memberId}/branches`, { branchIds })
     }
 
     const index = mockStaff.findIndex(m => m.id === memberId)
@@ -215,11 +187,7 @@ export const staffService = {
 
   async suspendStaff(memberId: string): Promise<StaffMember> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<StaffMember>(`/staff/${memberId}/suspend`, {})
-      } catch (err) {
-        console.warn('Backend staff suspend failed, using mock:', err)
-      }
+      return apiClient.post<StaffMember>(`/staff/${memberId}/suspend`, {})
     }
 
     const index = mockStaff.findIndex(m => m.id === memberId)
@@ -230,11 +198,7 @@ export const staffService = {
 
   async reactivateStaff(memberId: string): Promise<StaffMember> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<StaffMember>(`/staff/${memberId}/reactivate`, {})
-      } catch (err) {
-        console.warn('Backend staff reactivate failed, using mock:', err)
-      }
+      return apiClient.post<StaffMember>(`/staff/${memberId}/reactivate`, {})
     }
 
     const index = mockStaff.findIndex(m => m.id === memberId)
@@ -242,5 +206,45 @@ export const staffService = {
     mockStaff[index] = { ...mockStaff[index], isActive: true }
     return mockStaff[index]
   },
-}
 
+  async getInvitationInfo(token: string): Promise<{
+    id: string
+    email: string
+    role: string
+    businessId: string
+    businessName: string
+    invitedByName: string | null
+    isExpired: boolean
+    isUsed: boolean
+  }> {
+    if (!isExplicitDemo()) {
+      return apiClient.get(`/staff/invitations/info?token=${encodeURIComponent(token)}`)
+    }
+    const found = mockInvitations.find(i => i.invitationToken === token)
+    return {
+      id: found?.id || 'mock-inv',
+      email: found?.email || 'new.staff@example.com',
+      role: found?.role || 'cashier',
+      businessId: 'biz-default',
+      businessName: 'Northstar Retail Demo',
+      invitedByName: 'Store Owner',
+      isExpired: false,
+      isUsed: false,
+    }
+  },
+
+  async acceptInvitation(payload: {
+    token: string
+    name?: string
+    password?: string
+  }): Promise<{ memberId: string; businessId: string; role: string }> {
+    if (!isExplicitDemo()) {
+      return apiClient.post('/staff/invitations/accept', payload)
+    }
+    return {
+      memberId: 'mem-new',
+      businessId: 'biz-default',
+      role: 'cashier',
+    }
+  },
+}

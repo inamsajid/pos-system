@@ -41,6 +41,25 @@ export class NorthstarOfflineDatabase extends Dexie {
     this.version(2).stores(OFFLINE_SCHEMA_DEFINITIONS[2])
     this.version(3).stores(OFFLINE_SCHEMA_DEFINITIONS[3])
     this.version(4).stores(OFFLINE_SCHEMA_DEFINITIONS[4])
+    this.version(5)
+      .stores(OFFLINE_SCHEMA_DEFINITIONS[5])
+      .upgrade(async (tx) => {
+        const auths = await tx.table('offlineAuthorizations').toArray()
+        const authUserMap = new Map<string, string>()
+        for (const a of auths as Array<{ id: string; userId?: string }>) {
+          if (a.userId) {
+            authUserMap.set(a.id, a.userId)
+          }
+        }
+        await tx
+          .table('offlineAllocations')
+          .toCollection()
+          .modify((alloc: Record<string, unknown>) => {
+            if (!alloc.userId) {
+              alloc.userId = authUserMap.get(String(alloc.authorizationId || '')) || 'unknown'
+            }
+          })
+      })
   }
 
   /**
@@ -333,10 +352,28 @@ export class NorthstarOfflineDatabase extends Dexie {
   }
 
   /**
-   * Completely purges cached catalog, cursors & sync states for a specific user and business
+   * Purges cached catalog, cursors & completed/non-pending state for a specific user and business
    * (e.g. on user sign-out or business switch).
+   * Preserves unsynced pending/retryable/conflict/blocked_auth outbox commands & provisional sales
+   * locked to the original userId/businessId unless preservePendingOffline is false.
    */
-  async clearScopedCache(userId: string, businessId: string): Promise<void> {
+  async clearScopedCache(
+    userId: string,
+    businessId: string,
+    options: { preservePendingOffline?: boolean } = {}
+  ): Promise<void> {
+    const { preservePendingOffline = true } = options
+    const pendingStatuses = new Set([
+      'pending',
+      'leased',
+      'sending',
+      'retryable',
+      'conflict',
+      'blocked_auth',
+      'reconciliation_required',
+    ])
+    const preservedSaleStatuses = new Set(['provisional', 'conflict', 'reconciliation_required'])
+
     await this.transaction(
       'rw',
       [
@@ -346,6 +383,9 @@ export class NorthstarOfflineDatabase extends Dexie {
         this.cachedBranchStock,
         this.syncCursors,
         this.outboxCommands,
+        this.offlineSales,
+        this.offlineAuthorizations,
+        this.offlineAllocations,
       ],
       async () => {
         const prodKeys = await this.cachedProducts
@@ -373,12 +413,91 @@ export class NorthstarOfflineDatabase extends Dexie {
           .primaryKeys()
         await this.syncCursors.bulkDelete(cursorKeys)
 
-        const outboxKeys = await this.outboxCommands
+        const activeAuthIds = new Set<string>()
+        const allOutbox = await this.outboxCommands
           .filter((o) => o.userId === userId && o.businessId === businessId)
+          .toArray()
+        const outboxToDelete: string[] = []
+        for (const o of allOutbox) {
+          if (preservePendingOffline && pendingStatuses.has(o.status)) {
+            const authId = o.payload?.authorizationId
+            if (typeof authId === 'string' && authId) {
+              activeAuthIds.add(authId)
+            }
+          } else {
+            outboxToDelete.push(o.id)
+          }
+        }
+        if (outboxToDelete.length > 0) {
+          await this.outboxCommands.bulkDelete(outboxToDelete)
+        }
+
+        const allSales = await this.offlineSales
+          .filter((s) => s.userId === userId && s.businessId === businessId)
+          .toArray()
+        const salesToDelete: string[] = []
+        for (const s of allSales) {
+          if (preservePendingOffline && preservedSaleStatuses.has(s.status)) {
+            if (s.authorizationId) {
+              activeAuthIds.add(s.authorizationId)
+            }
+          } else {
+            salesToDelete.push(s.id)
+          }
+        }
+        if (salesToDelete.length > 0) {
+          await this.offlineSales.bulkDelete(salesToDelete)
+        }
+
+        const authKeysToDelete = await this.offlineAuthorizations
+          .filter(
+            (a) =>
+              a.userId === userId &&
+              a.businessId === businessId &&
+              (!preservePendingOffline || !activeAuthIds.has(a.id))
+          )
           .primaryKeys()
-        await this.outboxCommands.bulkDelete(outboxKeys)
+        if (authKeysToDelete.length > 0) {
+          await this.offlineAuthorizations.bulkDelete(authKeysToDelete)
+        }
+
+        const allocKeysToDelete = await this.offlineAllocations
+          .filter(
+            (al) =>
+              al.userId === userId &&
+              al.businessId === businessId &&
+              (!preservePendingOffline || !activeAuthIds.has(al.authorizationId))
+          )
+          .primaryKeys()
+        if (allocKeysToDelete.length > 0) {
+          await this.offlineAllocations.bulkDelete(allocKeysToDelete)
+        }
       }
     )
+  }
+
+  /**
+   * Purges all non-pending cached data across all businesses belonging to userId on sign-out.
+   * Preserves unsynced offline transactions and their referenced authorizations/allocations.
+   */
+  async clearUserNonPendingCache(userId: string): Promise<void> {
+    const bizIds = new Set<string>()
+    const [prods, cats, stock, syncStates, cursors, sales, outbox, auths] = await Promise.all([
+      this.cachedProducts.filter((p) => p.userId === userId).toArray(),
+      this.cachedCategories.filter((c) => c.userId === userId).toArray(),
+      this.cachedBranchStock.filter((s) => s.userId === userId).toArray(),
+      this.cacheSyncState.filter((s) => s.userId === userId).toArray(),
+      this.syncCursors.filter((c) => c.userId === userId).toArray(),
+      this.offlineSales.filter((s) => s.userId === userId).toArray(),
+      this.outboxCommands.filter((o) => o.userId === userId).toArray(),
+      this.offlineAuthorizations.filter((a) => a.userId === userId).toArray(),
+    ])
+    for (const r of [...prods, ...cats, ...stock, ...syncStates, ...cursors, ...sales, ...outbox, ...auths]) {
+      if (r.businessId) bizIds.add(r.businessId)
+    }
+    for (const businessId of bizIds) {
+      await this.clearScopedCache(userId, businessId, { preservePendingOffline: true })
+    }
   }
 
   /**

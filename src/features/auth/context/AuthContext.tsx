@@ -2,6 +2,11 @@ import { useEffect, useState, useCallback, useRef, type ReactNode } from 'react'
 import { AuthContext } from './authContextInstance'
 import { apiClient, ApiError, setApiContextProvider } from '../../../lib/api-client'
 import { queryClient } from '../../../app/queryClient'
+import {
+  clearTransientBrowserStores,
+  performLogoutCleanup,
+} from '../../../lib/offline/sessionCleanup'
+import { outboxService } from '../../../lib/offline/outbox/outbox.service'
 import type {
   AuthStatus,
   UserProfile,
@@ -50,15 +55,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const resumeUserBlockedCommands = useCallback(async (userId?: string | null, businessId?: string | null) => {
+    if (!userId || typeof indexedDB === 'undefined') return
+    try {
+      const resumed = await outboxService.resumeAuthBlocked(userId, businessId || undefined)
+      if (resumed > 0 && businessId && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        void outboxService.dispatchPending(userId, businessId, activeContextRef.current.branchId)
+      }
+    } catch {
+      // Safe resume guard for uninitialized offline stores
+    }
+  }, [])
+
   const setActiveBusiness = useCallback((biz: BusinessMembershipInfo | null) => {
+    const previousBizId = activeContextRef.current.businessId
+    if (previousBizId && biz?.id === previousBizId) {
+      return
+    }
+
     setActiveBusinessState(biz)
-    activeContextRef.current.businessId = biz?.id || null
+    setActiveBranchState(null)
+    activeContextRef.current = {
+      userId: activeContextRef.current.userId,
+      businessId: biz?.id || null,
+      branchId: null,
+    }
     queryClient.clear()
+
+    if (biz?.id) {
+      void apiClient
+        .get<BranchInfo[]>('/branches')
+        .then((branches) => {
+          if (activeContextRef.current.businessId !== biz.id) return
+          if (Array.isArray(branches) && branches.length > 0) {
+            const selectedBranch = branches.find((b) => b.is_main_branch) || branches[0]
+            setActiveBranchState(selectedBranch)
+            activeContextRef.current = {
+              userId: activeContextRef.current.userId,
+              businessId: biz.id,
+              branchId: selectedBranch.id,
+            }
+            queryClient.clear()
+          }
+        })
+        .catch(() => {
+          // Non-blocking branch reload when offline or restricted
+        })
+    }
   }, [])
 
   const setActiveBranch = useCallback((branch: BranchInfo | null) => {
     setActiveBranchState(branch)
-    activeContextRef.current.branchId = branch?.id || null
+    activeContextRef.current = {
+      userId: activeContextRef.current.userId,
+      businessId: activeContextRef.current.businessId,
+      branchId: branch?.id || null,
+    }
     queryClient.clear()
   }, [])
 
@@ -71,19 +123,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setActiveBusinessState(biz)
       setActiveBranchState(data.activeBranch || null)
       activeContextRef.current = {
+        userId: data.user?.id || null,
         businessId: biz?.id || null,
         branchId: data.activeBranch?.id || null,
       }
       setStatus('authenticated')
+      void resumeUserBlockedCommands(data.user?.id, biz?.id)
     } catch {
+      const prevUserId = activeContextRef.current.userId
+      await performLogoutCleanup(prevUserId)
       setUser(null)
       setBusinesses([])
       setActiveBusinessState(null)
       setActiveBranchState(null)
-      activeContextRef.current = { businessId: null, branchId: null }
+      activeContextRef.current = { userId: null, businessId: null, branchId: null }
       setStatus('unauthenticated')
     }
-  }, [])
+  }, [resumeUserBlockedCommands])
 
   useEffect(() => {
     let ignore = false
@@ -97,10 +153,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setActiveBusinessState(biz)
           setActiveBranchState(data.activeBranch || null)
           activeContextRef.current = {
+            userId: data.user?.id || null,
             businessId: biz?.id || null,
             branchId: data.activeBranch?.id || null,
           }
           setStatus('authenticated')
+          void resumeUserBlockedCommands(data.user?.id, biz?.id)
         }
       })
       .catch(() => {
@@ -109,7 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setBusinesses([])
           setActiveBusinessState(null)
           setActiveBranchState(null)
-          activeContextRef.current = { businessId: null, branchId: null }
+          activeContextRef.current = { userId: null, businessId: null, branchId: null }
           setStatus('unauthenticated')
         }
       })
@@ -117,21 +175,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       ignore = true
     }
-  }, [])
+  }, [resumeUserBlockedCommands])
 
   const signIn = async (email: string, password: string): Promise<void> => {
     try {
+      const previousUserId = activeContextRef.current.userId
       const data = await apiClient.post<SignInResponsePayload>('/auth/sign-in', {
         email,
         password,
       })
 
-      queryClient.clear()
+      if (previousUserId && previousUserId !== data.user.id) {
+        await performLogoutCleanup(previousUserId)
+      } else {
+        await clearTransientBrowserStores()
+      }
+
+      const initialBiz = data.businesses?.[0] || null
       setUser(data.user)
       setBusinesses(data.businesses || [])
-      const initialBiz = data.businesses?.[0] || null
       setActiveBusinessState(initialBiz)
-      activeContextRef.current.businessId = initialBiz?.id || null
+      setActiveBranchState(null)
+      activeContextRef.current = {
+        userId: data.user.id,
+        businessId: initialBiz?.id || null,
+        branchId: null,
+      }
       setStatus('authenticated')
 
       // Fetch active branch if available
@@ -140,11 +209,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (branches.length > 0) {
           const selectedBranch = branches.find((b) => b.is_main_branch) || branches[0]
           setActiveBranchState(selectedBranch)
-          activeContextRef.current.branchId = selectedBranch.id
+          activeContextRef.current = {
+            userId: data.user.id,
+            businessId: initialBiz?.id || null,
+            branchId: selectedBranch.id,
+          }
         }
       } catch {
         // Non-blocking branch resolution
       }
+
+      void resumeUserBlockedCommands(data.user.id, initialBiz?.id)
     } catch (err) {
       if (err instanceof ApiError) {
         throw err
@@ -154,17 +229,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const signOut = async (): Promise<void> => {
+    const outgoingUserId = activeContextRef.current.userId || user?.id || null
     try {
       await apiClient.post('/auth/sign-out')
     } catch {
       // Ignore network errors on signout
     } finally {
-      queryClient.clear()
+      await performLogoutCleanup(outgoingUserId)
       setUser(null)
       setBusinesses([])
       setActiveBusinessState(null)
       setActiveBranchState(null)
-      activeContextRef.current = { businessId: null, branchId: null }
+      activeContextRef.current = { userId: null, businessId: null, branchId: null }
       setStatus('unauthenticated')
     }
   }

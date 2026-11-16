@@ -24,10 +24,17 @@ export class CustomerLedgerService {
       throw HttpError.notFound('Customer not found.')
     }
 
+    const scopedBranchIds = filters.branchId
+      ? authorizedBranchIds.includes(filters.branchId)
+        ? [filters.branchId]
+        : []
+      : authorizedBranchIds
+
     const openingBalanceMinor = await this.repo.getOpeningBalanceBeforeDate(
       businessId,
       customerId,
-      filters.startDate
+      filters.startDate,
+      scopedBranchIds
     )
 
     const totalCount = await this.repo.countEntries(
@@ -79,14 +86,15 @@ export class CustomerLedgerService {
 
   async getCustomerFinancialSummary(
     businessId: string,
-    customerId: string
+    customerId: string,
+    authorizedBranchIds?: string[]
   ): Promise<CustomerFinancialSummaryDTO> {
     const customer = await this.repo.getCustomer(businessId, customerId)
     if (!customer) {
       throw HttpError.notFound('Customer not found.')
     }
 
-    return this.repo.getFinancialSummary(businessId, customerId)
+    return this.repo.getFinancialSummary(businessId, customerId, authorizedBranchIds)
   }
 }
 

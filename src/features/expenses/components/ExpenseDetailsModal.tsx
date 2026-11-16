@@ -66,7 +66,7 @@ export function ExpenseDetailsModal({ expense, open, onClose, onVoidClick }: Pro
 
           <div className="p-2 rounded bg-slate-50">
             <dt className="text-slate-500">Branch</dt>
-            <dd className="font-semibold text-slate-900 mt-0.5">{expense.branchName || 'Main Store'}</dd>
+            <dd className="font-semibold text-slate-900 mt-0.5">{expense.branchName || expense.branchId || '—'}</dd>
           </div>
 
           <div className="p-2 rounded bg-slate-50">

@@ -5,7 +5,7 @@
 
 import { outboxService } from './outbox/outbox.service'
 import { syncCatalog } from './catalogSync'
-import { getApiContext } from '../api-client'
+import { getApiContext, resolveApiUrl } from '../api-client'
 
 export type NetworkStatusListener = (isReconnected: boolean) => void
 
@@ -13,7 +13,10 @@ export class ReconnectionService {
   private isChecking = false
   private isSyncing = false
   private listeners = new Set<NetworkStatusListener>()
-  private checkUrl = '/api/v1/health'
+
+  private getCheckUrl(): string {
+    return resolveApiUrl('/health')
+  }
 
   constructor() {
     this.setupListeners()
@@ -51,7 +54,7 @@ export class ReconnectionService {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 4000)
 
-      const resp = await fetch(this.checkUrl, {
+      const resp = await fetch(this.getCheckUrl(), {
         method: 'GET',
         signal: controller.signal,
         cache: 'no-store',

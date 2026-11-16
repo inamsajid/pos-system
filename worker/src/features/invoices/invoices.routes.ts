@@ -3,6 +3,7 @@ import { jsonResponse } from '../../lib/response'
 import {
   requireAuth,
   requireBusinessContext,
+  requirePermission,
 } from '../../middleware/authMiddleware'
 import { resolveAuthorizedBranchIds } from '../../auth/tenantContext'
 import { InvoicesService } from './invoices.service'
@@ -11,6 +12,7 @@ import { parseInvoiceQueryParams } from './invoices.validation'
 export async function handleListInvoices(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseInvoiceQueryParams(ctx.url)
@@ -37,6 +39,7 @@ export async function handleListInvoices(ctx: RequestContext): Promise<Response>
 export async function handleGetInvoice(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const invoiceId = ctx.params.id
@@ -58,6 +61,7 @@ export async function handleGetInvoice(ctx: RequestContext): Promise<Response> {
 export async function handleGetInvoiceSale(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const invoiceId = ctx.params.id

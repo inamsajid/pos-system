@@ -34,11 +34,16 @@ export interface OfflineAuthorizationDTO {
   branchId: string
   userId: string
   deviceId: string
+  installationId?: string
   catalogVersion: number
   pricingVersion: number
   maxTransactions: number
   maxTotalAmountMinor: number
+  usedTransactions?: number
+  usedTotalAmountMinor?: number
   allowDiscounts: boolean
+  taxRatePercent?: number
+  taxInclusive?: boolean
   status: 'active' | 'revoked' | 'expired' | 'completed'
   issuedAt: string
   expiresAt: string
@@ -52,6 +57,8 @@ export interface OfflineSaleItemInput {
   allocationId: string
   quantity: number
   unitPriceMinor: number
+  discountMinor?: number
+  taxMinor?: number
   subtotalMinor?: number
   lineTotalMinor?: number
 }
@@ -65,6 +72,10 @@ export interface CommitOfflineSaleInput {
   cashTenderedMinor: number
   offlineCreatedAt: string
   terminalId?: string
+  priceConflictResolution?: {
+    mode: 'accept_offline_price' | 'apply_current_price'
+    reason: string
+  }
 }
 
 export interface CommitOfflineSaleResponse {

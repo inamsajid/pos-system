@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Users, UserCheck, UserX, Mail, Copy, Check } from 'lucide-react'
+import { Plus, Users, UserCheck, UserX, Mail, Copy, Check, AlertCircle } from 'lucide-react'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { formatBusinessDate } from '../../../lib/date'
 import { useAuth } from '../../auth/context/useAuth'
 import type { BranchInfo } from '../../auth/types'
-import { apiClient } from '../../../lib/api-client'
+import { apiClient, ApiError } from '../../../lib/api-client'
 import { staffService } from '../services/staffService'
 import type { StaffMember, StaffInvitation, StaffFilters as StaffFilterParams, StaffRole } from '../types/staff.types'
 import { InviteStaffModal } from '../components/InviteStaffModal'
@@ -27,9 +27,11 @@ const ROLE_COLORS: Record<StaffRole, string> = {
 export function StaffPage() {
   const navigate = useNavigate()
   const { user, activeBusiness } = useAuth()
-  const actorRole: StaffRole = (activeBusiness?.role as StaffRole) || 'owner'
+  const actorRole: StaffRole = (activeBusiness?.role as StaffRole) || 'cashier'
 
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [staff, setStaff] = useState<StaffMember[]>([])
   const [invitations, setInvitations] = useState<StaffInvitation[]>([])
   const [branches, setBranches] = useState<BranchInfo[]>([])
@@ -42,26 +44,59 @@ export function StaffPage() {
   const [editMember, setEditMember] = useState<StaffMember | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
     try {
-      setLoading(true)
-      const [staffRes, invRes, branchRes] = await Promise.all([
+      const [staffRes, invRes, branchRes] = await Promise.allSettled([
         staffService.getStaff(filters),
-        staffService.getInvitations().catch(() => []),
-        apiClient.get<BranchInfo[]>('/branches').catch(() => []),
+        staffService.getInvitations(),
+        apiClient.get<BranchInfo[]>('/branches'),
       ])
 
-      setStaff(staffRes)
-      setInvitations(invRes)
-      if (Array.isArray(branchRes)) setBranches(branchRes)
+      if (staffRes.status === 'rejected') {
+        setStaff([])
+        setLoadError(
+          staffRes.reason instanceof Error
+            ? staffRes.reason.message
+            : 'Unable to load staff members from server.'
+        )
+      } else {
+        setStaff(staffRes.value)
+      }
+
+      if (invRes.status === 'fulfilled') {
+        setInvitations(invRes.value)
+      } else {
+        setInvitations([])
+        if (!(invRes.reason instanceof ApiError && invRes.reason.status === 403)) {
+          setLoadError((prev) =>
+            prev ||
+            (invRes.reason instanceof Error
+              ? invRes.reason.message
+              : 'Unable to load staff invitations.')
+          )
+        }
+      }
+
+      if (branchRes.status === 'fulfilled') {
+        if (Array.isArray(branchRes.value)) setBranches(branchRes.value)
+      } else if (!(branchRes.reason instanceof ApiError && branchRes.reason.status === 403)) {
+        setLoadError((prev) =>
+          prev ||
+          (branchRes.reason instanceof Error
+            ? branchRes.reason.message
+            : 'Unable to load business branches.')
+        )
+      }
     } finally {
       setLoading(false)
     }
-  }
+  }, [filters])
 
   useEffect(() => {
     void loadData()
-  }, [filters.search, filters.role, filters.isActive, filters.branchId])
+  }, [loadData])
 
   // KPIs
   const totalStaffCount = staff.length
@@ -70,8 +105,9 @@ export function StaffPage() {
   const pendingInvitesCount = invitations.length
 
   const handleToggleActive = async (member: StaffMember) => {
+    setActionError(null)
     if (member.userId === user?.id) {
-      alert('You cannot suspend your own account.')
+      setActionError('You cannot suspend your own account.')
       return
     }
 
@@ -83,18 +119,19 @@ export function StaffPage() {
         await staffService.reactivateStaff(member.id)
       }
       await loadData()
-    } catch (err: any) {
-      alert(err?.message || 'Failed to update member status.')
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update member status.')
     }
   }
 
   const handleRevokeInvite = async (invitationId: string) => {
+    setActionError(null)
     if (!confirm('Revoke this invitation?')) return
     try {
       await staffService.revokeInvitation(invitationId)
       await loadData()
-    } catch (err: any) {
-      alert(err?.message || 'Failed to revoke invitation.')
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to revoke invitation.')
     }
   }
 
@@ -123,6 +160,30 @@ export function StaffPage() {
           </div>
         }
       />
+
+      {(loadError || actionError) && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+            <span>{actionError || loadError}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {actionError && (
+              <Button variant="secondary" onClick={() => setActionError(null)}>
+                Dismiss
+              </Button>
+            )}
+            {loadError && (
+              <Button variant="secondary" onClick={() => void loadData()}>
+                Retry
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

@@ -58,7 +58,7 @@ export const settingsService = {
       return { ...mockSettings }
     }
     try {
-      return await apiClient.get<BusinessSettings>('/api/v1/settings')
+      return await apiClient.get<BusinessSettings>('/settings')
     } catch (err) {
       if (isExplicitDemo()) {
         return { ...mockSettings }
@@ -77,7 +77,7 @@ export const settingsService = {
       return { ...mockSettings }
     }
 
-    return apiClient.patch<BusinessSettings>('/api/v1/settings', input)
+    return apiClient.patch<BusinessSettings>('/settings', input)
   },
 }
 

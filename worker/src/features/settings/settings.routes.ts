@@ -12,6 +12,7 @@ import type { UpdateBusinessSettingsInput } from './settings.types'
 export async function handleGetSettings(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('settings_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const service = new SettingsService(ctx.env.DB)

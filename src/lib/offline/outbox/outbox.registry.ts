@@ -1,5 +1,6 @@
 import type { OutboxCommandRecord } from './outbox.types'
 import { OutboxValidationError } from './outbox.errors'
+import { apiClient, ApiError } from '../../api-client'
 
 export interface CommandDefinition {
   commandType: string
@@ -57,48 +58,57 @@ export class CommandRegistry {
         return { valid: true }
       },
       handler: async (cmd) => {
-        const url = '/api/v1/offline/sales/commit'
         const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
           'Idempotency-Key': cmd.idempotencyKey,
           'X-Business-Id': cmd.businessId,
         }
         if (cmd.branchId) {
           headers['X-Branch-Id'] = cmd.branchId
         }
-
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(cmd.payload),
-        })
-
-        if (!resp.ok) {
-          const errData = ((await resp.json().catch(() => ({}))) || {}) as Record<string, unknown>
-          const error = new Error((errData.message as string) || `HTTP ${resp.status}`)
-          Object.assign(error, {
-            status: resp.status,
-            code: (errData.error as Record<string, unknown>)?.code || 'COMMUNICATION_ERROR',
-          })
-          throw error
+        const preferredDeviceHeader =
+          (typeof cmd.payload.installationId === 'string' && cmd.payload.installationId) ||
+          (typeof cmd.payload.deviceId === 'string' && cmd.payload.deviceId) ||
+          cmd.deviceId
+        if (preferredDeviceHeader) {
+          headers['X-Device-Id'] = preferredDeviceHeader
         }
 
-        const data = (await resp.json()) as { data?: { saleId?: string; invoiceNumber?: string } }
-        const resBody = data?.data || (data as Record<string, unknown>)
-        const serverSaleId = (resBody as { saleId?: string }).saleId || `srv_${Date.now()}`
-        const officialInvoiceNumber = (resBody as { invoiceNumber?: string }).invoiceNumber || `INV-${Date.now()}`
+        let resBody: { saleId?: string; invoiceNumber?: string }
+        try {
+          resBody = await apiClient.post<{ saleId?: string; invoiceNumber?: string }>(
+            '/offline/sales/commit',
+            cmd.payload,
+            { headers }
+          )
+        } catch (err) {
+          if (err instanceof ApiError) {
+            const error = new Error(err.message)
+            Object.assign(error, {
+              status: err.status,
+              code: err.code || 'COMMUNICATION_ERROR',
+              details: err.details,
+            })
+            throw error
+          }
+          throw err
+        }
+
+        if (!resBody?.saleId || !resBody?.invoiceNumber) {
+          throw new Error(
+            'Server acknowledged /offline/sales/commit without official saleId and invoiceNumber.'
+          )
+        }
+
+        const serverSaleId = resBody.saleId
+        const officialInvoiceNumber = resBody.invoiceNumber
 
         if (cmd.payload.provisionalSaleId && typeof cmd.payload.provisionalSaleId === 'string') {
-          try {
-            const { offlineSalesRepository } = await import('../sales/offlineSales.repository')
-            await offlineSalesRepository.acknowledgeSale(
-              cmd.payload.provisionalSaleId,
-              serverSaleId,
-              officialInvoiceNumber
-            )
-          } catch {
-            // Local acknowledgement persistence
-          }
+          const { offlineSalesRepository } = await import('../sales/offlineSales.repository')
+          await offlineSalesRepository.acknowledgeSale(
+            cmd.payload.provisionalSaleId,
+            serverSaleId,
+            officialInvoiceNumber
+          )
         }
 
         return {

@@ -12,7 +12,18 @@ export function toMinorUnits(amountMajor: number): number {
   if (!Number.isFinite(amountMajor)) {
     return 0
   }
-  return Math.round(amountMajor * 100)
+  const fixed = amountMajor.toFixed(6)
+  const negative = fixed.startsWith('-')
+  const unsigned = negative ? fixed.slice(1) : fixed
+  const [wholePart = '0', fracPart = ''] = unsigned.split('.')
+  const padded = `${fracPart}000000`
+  const twoDigits = padded.slice(0, 2)
+  const nextDigit = parseInt(padded[2] || '0', 10)
+  let minor = parseInt(wholePart, 10) * 100 + parseInt(twoDigits, 10)
+  if (nextDigit >= 5) {
+    minor += 1
+  }
+  return negative ? -minor : minor
 }
 
 /**
@@ -131,6 +142,7 @@ export function calculateTaxPaise(taxableAmountMinor: number, taxRatePercent: nu
   if (!Number.isFinite(taxableAmountMinor) || taxableAmountMinor <= 0) return 0
   if (!Number.isFinite(taxRatePercent) || taxRatePercent <= 0) return 0
 
-  return Math.round((taxableAmountMinor * taxRatePercent) / 100)
+  const taxRateBps = Math.round((taxRatePercent + Number.EPSILON) * 100)
+  return Math.round((taxableAmountMinor * taxRateBps) / 10000)
 }
 

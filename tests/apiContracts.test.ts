@@ -8,22 +8,68 @@ import {
 } from '../src/api'
 
 describe('API Preparation — Query Key Factory', () => {
-  it('generates predictable query keys for products', () => {
+  it('generates predictable tenant-scoped query keys for products', () => {
     expect(queryKeys.products.all).toEqual(['products'])
-    expect(queryKeys.products.lists()).toEqual(['products', 'list'])
-    expect(queryKeys.products.list({ categoryId: 'cat-1' })).toEqual(['products', 'list', { categoryId: 'cat-1' }])
-    expect(queryKeys.products.detail('prod-123')).toEqual(['products', 'detail', 'prod-123'])
+    expect(queryKeys.products.lists()).toEqual(['products', 'anon', 'no-biz', 'all-branches', 'list'])
+    expect(queryKeys.products.list({ categoryId: 'cat-1' })).toEqual([
+      'products',
+      'anon',
+      'no-biz',
+      'all-branches',
+      'list',
+      { categoryId: 'cat-1' },
+    ])
+    expect(queryKeys.products.detail('prod-123')).toEqual([
+      'products',
+      'anon',
+      'no-biz',
+      'all-branches',
+      'detail',
+      'prod-123',
+    ])
   })
 
-  it('generates predictable query keys for customer ledgers and balances', () => {
-    expect(queryKeys.customers.ledger('cust-456')).toEqual(['customers', 'detail', 'cust-456', 'ledger', {}])
-    expect(queryKeys.customers.balances()).toEqual(['customers', 'balances'])
+  it('generates predictable tenant-scoped query keys for customer ledgers and balances', () => {
+    expect(queryKeys.customers.ledger('cust-456')).toEqual([
+      'customers',
+      'anon',
+      'no-biz',
+      'all-branches',
+      'detail',
+      'cust-456',
+      'ledger',
+      {},
+    ])
+    expect(queryKeys.customers.balances()).toEqual([
+      'customers',
+      'anon',
+      'no-biz',
+      'all-branches',
+      'balances',
+    ])
   })
 
-  it('generates predictable query keys for sales and inventory', () => {
-    expect(queryKeys.sales.lists()).toEqual(['sales', 'list'])
-    expect(queryKeys.inventory.balances('branch-main')).toEqual(['inventory', 'balances', 'branch-main'])
-    expect(queryKeys.inventory.balances()).toEqual(['inventory', 'balances', 'all'])
+  it('generates predictable tenant-scoped query keys for sales and inventory', () => {
+    expect(queryKeys.sales.lists()).toEqual(['sales', 'anon', 'no-biz', 'all-branches', 'list'])
+    expect(queryKeys.inventory.balances('branch-main')).toEqual([
+      'inventory',
+      'anon',
+      'no-biz',
+      'branch-main',
+      'balances',
+    ])
+    expect(queryKeys.inventory.balances()).toEqual([
+      'inventory',
+      'anon',
+      'no-biz',
+      'all-branches',
+      'balances',
+    ])
+    expect(
+      queryKeys.products.lists({ userId: 'u1', businessId: 'biz-a', branchId: 'br-1' })
+    ).not.toEqual(
+      queryKeys.products.lists({ userId: 'u1', businessId: 'biz-b', branchId: 'br-1' })
+    )
   })
 })
 

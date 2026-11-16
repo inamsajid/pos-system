@@ -1,12 +1,25 @@
 import { HttpError } from '../../lib/errors'
 import { getCurrentBusinessDateKey } from '../../lib/businessDate'
+import { hasPermission, type MemberRole } from '../../auth/tenantContext'
 import {
   computeCanonicalRequestHash,
   checkIdempotency,
   buildIdempotencyInsertStatement,
 } from '../../lib/idempotency'
-import { validateQuantityByUnit, calculateLineSubtotalMinor } from '../../lib/money'
-import { signAuthorizationPayload, verifyAuthorizationPayload } from './offlineCrypto'
+import {
+  validateQuantityByUnit,
+  calculateLineSubtotalMinor,
+  calculateTaxMinor,
+  bpsFromPercent,
+} from '../../lib/money'
+import {
+  signAuthorizationPayload,
+  verifyAuthorizationPayload,
+  signPricingSnapshot,
+  verifyPricingSnapshot,
+  type OfflinePricingSnapshot,
+} from './offlineCrypto'
+import { ChangeLogRepository } from '../sync/changeLog.repository'
 import type {
   CreateOfflineAuthorizationInput,
   OfflineAuthorizationDTO,
@@ -30,6 +43,7 @@ interface ProductRow {
 interface DeviceRow {
   id: string
   business_id: string
+  user_id: string
   status: string
   installation_id: string
 }
@@ -44,11 +58,15 @@ interface AuthRow {
   pricing_version: number
   max_transactions: number
   max_total_amount_minor: number
+  used_transactions: number
+  used_total_amount_minor: number
   allow_discounts: number
   status: string
   issued_at: string
   expires_at: string
   signature: string
+  pricing_snapshot_json?: string | null
+  pricing_signature?: string | null
 }
 
 interface AllocationRow {
@@ -66,9 +84,11 @@ interface AllocationRow {
 
 export class OfflineService {
   private readonly db: D1Database
+  private readonly changeLogRepo: ChangeLogRepository
 
   constructor(db: D1Database) {
     this.db = db
+    this.changeLogRepo = new ChangeLogRepository(db)
   }
 
   /**
@@ -78,15 +98,22 @@ export class OfflineService {
     businessId: string
     branchId: string
     userId: string
+    actorRole?: MemberRole
     input: CreateOfflineAuthorizationInput
     secret: string
   }): Promise<OfflineAuthorizationDTO> {
-    const { businessId, branchId, userId, input, secret } = params
+    const { businessId, branchId, userId, actorRole = 'cashier', input, secret } = params
 
-    // 1. Validate device registration
+    // 1. Validate device registration (accept registered id or user-scoped installationId)
     const device = await this.db
-      .prepare('SELECT id, business_id, status FROM devices WHERE id = ? AND business_id = ? LIMIT 1')
-      .bind(input.deviceId, businessId)
+      .prepare(
+        `SELECT id, business_id, user_id, status, installation_id
+         FROM devices
+         WHERE business_id = ? AND (id = ? OR (installation_id = ? AND user_id = ?))
+         ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+         LIMIT 1`
+      )
+      .bind(businessId, input.deviceId, input.deviceId, userId, input.deviceId)
       .first<DeviceRow>()
 
     if (!device) {
@@ -95,6 +122,12 @@ export class OfflineService {
     if (device.status !== 'active') {
       throw HttpError.forbidden(`Device '${input.deviceId}' is revoked and cannot be authorized for offline sales.`)
     }
+    const isManagerOrAbove = actorRole === 'owner' || actorRole === 'admin' || actorRole === 'manager'
+    if (device.user_id && device.user_id !== userId && !isManagerOrAbove) {
+      throw HttpError.forbidden(`Only managers or the registered device operator can authorize device '${device.id}'.`)
+    }
+    const authorizedUserId = device.user_id || userId
+    const canonicalDeviceId = device.id
 
     if (!input.products || input.products.length === 0) {
       throw HttpError.badRequest('At least one product allocation is required for offline authorization.')
@@ -212,7 +245,7 @@ export class OfflineService {
             authId,
             businessId,
             branchId,
-            input.deviceId,
+            canonicalDeviceId,
             userId,
             prod.id,
             validatedQty,
@@ -223,39 +256,96 @@ export class OfflineService {
       )
     }
 
-    // 3. Generate Cryptographic Signature
+    // 2b. Fetch authoritative business tax policy for signed pricing snapshot
+    const bizSettings = await this.db
+      .prepare('SELECT default_tax_rate, settings_json FROM business_settings WHERE business_id = ? LIMIT 1')
+      .bind(businessId)
+      .first<{ default_tax_rate: number; settings_json: string | null }>()
+
+    let parsedBizJson: Record<string, unknown> = {}
+    if (bizSettings?.settings_json) {
+      try {
+        parsedBizJson = JSON.parse(bizSettings.settings_json) as Record<string, unknown>
+      } catch {
+        parsedBizJson = {}
+      }
+    }
+    const taxRatePercent =
+      typeof bizSettings?.default_tax_rate === 'number' &&
+      Number.isFinite(bizSettings.default_tax_rate) &&
+      bizSettings.default_tax_rate > 0
+        ? bizSettings.default_tax_rate
+        : 0
+    const taxRateBps = bpsFromPercent(taxRatePercent)
+    const taxInclusive = Boolean(parsedBizJson.taxInclusive ?? false)
+
+    // 3. Generate Cryptographic Signatures (Authorization + Pricing Policy Snapshot)
+    const sortedProductIds = [...new Set(productIds)].sort()
     const signature = await signAuthorizationPayload(secret, {
       authorizationId: authId,
       businessId,
       branchId,
-      userId,
-      deviceId: input.deviceId,
+      userId: authorizedUserId,
+      deviceId: canonicalDeviceId,
       expiresAt,
-      productIds,
+      productIds: sortedProductIds,
     })
 
-    const maxTransactions = input.maxTransactions || 100
-    const maxTotalAmountMinor = input.maxTotalAmountMinor || 5_000_000
+    const maxTransactions =
+      typeof input.maxTransactions === 'number' && Number.isInteger(input.maxTransactions) && input.maxTransactions > 0
+        ? input.maxTransactions
+        : 100
+    const maxTotalAmountMinor =
+      typeof input.maxTotalAmountMinor === 'number' &&
+      Number.isInteger(input.maxTotalAmountMinor) &&
+      input.maxTotalAmountMinor > 0
+        ? input.maxTotalAmountMinor
+        : 5_000_000
+
+    const productPrices: Record<string, number> = {}
+    for (const pid of sortedProductIds) {
+      const prod = productMap.get(pid)
+      if (prod) {
+        productPrices[pid] = prod.selling_price_minor
+      }
+    }
+
+    const pricingSnapshot: OfflinePricingSnapshot = {
+      authorizationId: authId,
+      businessId,
+      branchId,
+      maxTransactions,
+      maxTotalAmountMinor,
+      allowDiscounts: false,
+      taxRateBps,
+      taxInclusive,
+      productPrices,
+    }
+    const pricingSnapshotJson = JSON.stringify(pricingSnapshot)
+    const pricingSignature = await signPricingSnapshot(secret, pricingSnapshot)
 
     const authInsert = this.db
       .prepare(
         `INSERT INTO offline_authorizations (
            id, business_id, branch_id, user_id, device_id, catalog_version, pricing_version,
-           max_transactions, max_total_amount_minor, allow_discounts, status, issued_at, expires_at,
-           signature, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, 0, 'active', ?, ?, ?, ?, ?)`
+           max_transactions, max_total_amount_minor, used_transactions, used_total_amount_minor,
+           allow_discounts, status, issued_at, expires_at,
+           signature, pricing_snapshot_json, pricing_signature, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, 0, 0, 0, 'active', ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         authId,
         businessId,
         branchId,
-        userId,
-        input.deviceId,
+        authorizedUserId,
+        canonicalDeviceId,
         maxTransactions,
         maxTotalAmountMinor,
         nowIso,
         expiresAt,
         signature,
+        pricingSnapshotJson,
+        pricingSignature,
         nowIso,
         nowIso
       )
@@ -267,13 +357,18 @@ export class OfflineService {
       authorizationId: authId,
       businessId,
       branchId,
-      userId,
-      deviceId: input.deviceId,
+      userId: authorizedUserId,
+      deviceId: canonicalDeviceId,
+      installationId: device.installation_id,
       catalogVersion: 1,
       pricingVersion: 1,
       maxTransactions,
       maxTotalAmountMinor,
+      usedTransactions: 0,
+      usedTotalAmountMinor: 0,
       allowDiscounts: false,
+      taxRatePercent,
+      taxInclusive,
       status: 'active',
       issuedAt: nowIso,
       expiresAt,
@@ -294,8 +389,18 @@ export class OfflineService {
     input: CommitOfflineSaleInput
     idempotencyKey?: string
     secret: string
+    actorRole?: MemberRole
   }): Promise<CommitOfflineSaleResponse> {
-    const { businessId, branchId, userId, cashierName, input, idempotencyKey, secret } = params
+    const {
+      businessId,
+      branchId,
+      userId,
+      cashierName,
+      input,
+      idempotencyKey,
+      secret,
+      actorRole = 'cashier',
+    } = params
 
     // 1. Check Idempotency First (Ensures Exactly-Once Processing and Response Recovery)
     let requestHash = ''
@@ -316,10 +421,26 @@ export class OfflineService {
       }
     }
 
-    // 2. Validate Device
+    // 2. Validate Device (accept canonical device.id OR installation_id bound to user/authorization)
     const device = await this.db
-      .prepare('SELECT id, business_id, status FROM devices WHERE id = ? AND business_id = ? LIMIT 1')
-      .bind(input.deviceId, businessId)
+      .prepare(
+        `SELECT id, business_id, user_id, status, installation_id
+         FROM devices
+         WHERE business_id = ?
+           AND (
+             id = ?
+             OR (
+               installation_id = ?
+               AND (
+                 user_id = ?
+                 OR id = (SELECT device_id FROM offline_authorizations WHERE id = ? AND business_id = ? LIMIT 1)
+               )
+             )
+           )
+         ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+         LIMIT 1`
+      )
+      .bind(businessId, input.deviceId, input.deviceId, userId, input.authorizationId, businessId, input.deviceId)
       .first<DeviceRow>()
 
     if (!device || device.status !== 'active') {
@@ -341,18 +462,49 @@ export class OfflineService {
     if (auth.branch_id !== branchId) {
       throw HttpError.forbidden(`Offline authorization is bound to branch '${auth.branch_id}', not '${branchId}'.`)
     }
-    if (auth.device_id !== input.deviceId) {
+    if (auth.device_id !== device.id) {
       throw HttpError.forbidden(`Offline authorization is bound to device '${auth.device_id}', not '${input.deviceId}'.`)
     }
 
-    // Check expiry
-    const now = new Date()
-    if (new Date(auth.expires_at).getTime() < now.getTime()) {
-      throw HttpError.forbidden(`Offline authorization '${auth.id}' expired at ${auth.expires_at}.`)
+    const isManagerOrAbove = actorRole === 'owner' || actorRole === 'admin' || actorRole === 'manager'
+    if (auth.user_id !== userId && !isManagerOrAbove) {
+      throw HttpError.forbidden(`Offline authorization is bound to another user and cannot be committed by '${userId}'.`)
     }
 
-    // 4. Validate Cryptographic Signature
-    const productIds = input.items.map((i) => i.productId)
+    // Validate creation time against authorization window & post-expiry sync ceiling
+    const now = new Date()
+    const offlineCreatedMs = Date.parse(input.offlineCreatedAt)
+    if (!input.offlineCreatedAt || !Number.isFinite(offlineCreatedMs)) {
+      throw HttpError.badRequest('Valid ISO offlineCreatedAt timestamp is required.')
+    }
+    if (offlineCreatedMs > now.getTime() + 10 * 60_000) {
+      throw HttpError.badRequest('offlineCreatedAt timestamp cannot be in the future.')
+    }
+    const issuedAtMs = Date.parse(auth.issued_at)
+    if (Number.isFinite(issuedAtMs) && offlineCreatedMs < issuedAtMs - 15 * 60_000) {
+      throw HttpError.forbidden(`Offline sale timestamp precedes authorization issuance (${auth.issued_at}).`)
+    }
+    const expiresAtMs = Date.parse(auth.expires_at)
+    if (offlineCreatedMs > expiresAtMs) {
+      throw HttpError.forbidden(`Offline authorization '${auth.id}' expired at ${auth.expires_at}.`)
+    }
+    if (now.getTime() > expiresAtMs + 7 * 24 * 3600 * 1000) {
+      throw HttpError.forbidden(`Offline authorization '${auth.id}' post-expiry synchronization window has elapsed.`)
+    }
+
+    // 4. Load ALL authorization allocations to reconstruct authoritative granted product list
+    const allAllocationsRes = await this.db
+      .prepare(
+        `SELECT * FROM device_stock_allocations
+         WHERE business_id = ? AND authorization_id = ? AND device_id = ?`
+      )
+      .bind(businessId, auth.id, auth.device_id)
+      .all<AllocationRow>()
+
+    const allAuthAllocations = allAllocationsRes.results || []
+    const grantedProductIds = [...new Set(allAuthAllocations.map((a) => a.product_id))].sort()
+
+    // Validate Cryptographic Authorization Signature against ALL granted products (supports subset carts)
     const isSignatureValid = await verifyAuthorizationPayload(
       secret,
       {
@@ -362,7 +514,7 @@ export class OfflineService {
         userId: auth.user_id,
         deviceId: auth.device_id,
         expiresAt: auth.expires_at,
-        productIds,
+        productIds: grantedProductIds,
       },
       auth.signature
     )
@@ -371,7 +523,36 @@ export class OfflineService {
       throw HttpError.forbidden('Invalid or tampered offline authorization signature.')
     }
 
-    // 5. Validate Line Items, Allocations, and Quota
+    // Validate Signed Pricing Snapshot if present (tampered snapshot/signature always rejected)
+    let pricingSnapshot: OfflinePricingSnapshot | null = null
+    if (auth.pricing_snapshot_json || auth.pricing_signature) {
+      if (!auth.pricing_snapshot_json || !auth.pricing_signature) {
+        throw HttpError.forbidden('Corrupted or partial offline pricing snapshot signature.')
+      }
+      try {
+        pricingSnapshot = JSON.parse(auth.pricing_snapshot_json) as OfflinePricingSnapshot
+      } catch {
+        throw HttpError.forbidden('Malformed offline pricing snapshot payload.')
+      }
+      const pricingSigValid = await verifyPricingSnapshot(
+        secret,
+        pricingSnapshot,
+        auth.pricing_signature
+      )
+      if (!pricingSigValid) {
+        throw HttpError.forbidden('Invalid or tampered offline pricing snapshot signature.')
+      }
+      if (
+        pricingSnapshot.authorizationId !== auth.id ||
+        pricingSnapshot.businessId !== businessId ||
+        pricingSnapshot.branchId !== branchId
+      ) {
+        throw HttpError.forbidden('Offline pricing snapshot scope mismatch.')
+      }
+    }
+
+    // 5. Validate Line Items, Allocations, Quota, and Price Policy
+    const productIds = input.items.map((i) => i.productId)
     const placeholders = productIds.map(() => '?').join(', ')
     const productsRes = await this.db
       .prepare(
@@ -387,35 +568,15 @@ export class OfflineService {
       productMap.set(p.id, p)
     }
 
-    const allocIds = input.items.map((i) => i.allocationId)
-    const allocPlaceholders = allocIds.map(() => '?').join(', ')
-    const allocationsRes = await this.db
-      .prepare(
-        `SELECT * FROM device_stock_allocations
-         WHERE business_id = ? AND authorization_id = ? AND device_id = ? AND id IN (${allocPlaceholders})`
-      )
-      .bind(businessId, auth.id, input.deviceId, ...allocIds)
-      .all<AllocationRow>()
-
     const allocationMap = new Map<string, AllocationRow>()
-    for (const a of allocationsRes.results || []) {
+    for (const a of allAuthAllocations) {
       allocationMap.set(a.id, a)
     }
 
-    // Query physical inventory to track previous and new quantities for stock movements
-    const invBalances = await this.db
-      .prepare(
-        `SELECT product_id, quantity_on_hand
-         FROM inventory_balances
-         WHERE business_id = ? AND branch_id = ? AND product_id IN (${placeholders})`
-      )
-      .bind(businessId, branchId, ...productIds)
-      .all<{ product_id: string; quantity_on_hand: number }>()
-
-    const stockMap = new Map<string, number>()
-    for (const r of invBalances.results || []) {
-      stockMap.set(r.product_id, r.quantity_on_hand)
-    }
+    const nowIso = now.toISOString()
+    const saleId = `sale_${crypto.randomUUID()}`
+    const taxRateBps = pricingSnapshot?.taxRateBps ?? 0
+    const taxInclusive = pricingSnapshot?.taxInclusive ?? false
 
     interface ProcessedOfflineLine {
       id: string
@@ -423,11 +584,26 @@ export class OfflineService {
       allocation: AllocationRow
       quantity: number
       unitPriceMinor: number
+      originalUnitPriceMinor: number | null
+      priceOverrideReason: string | null
+      priceOverrideBy: string | null
+      priceOverrideAt: string | null
       unitCostMinor: number
+      subtotalMinor: number
+      taxMinor: number
       lineTotalMinor: number
     }
 
     const processedLines: ProcessedOfflineLine[] = []
+    const offlinePriceConflicts: Array<{
+      productId: string
+      name: string
+      authorizedPriceMinor: number
+      currentCatalogPriceMinor: number
+    }> = []
+    const overrideAuditEntries: Array<{ action: string; diff: Record<string, unknown> }> = []
+    let computedSubtotalMinor = 0
+    let computedTaxMinor = 0
     let computedTotalMinor = 0
 
     for (let i = 0; i < input.items.length; i++) {
@@ -460,9 +636,106 @@ export class OfflineService {
         )
       }
 
-      // Authoritative pricing from server catalog snapshot
-      const unitPriceMinor = product.selling_price_minor
-      const lineTotalMinor = calculateLineSubtotalMinor(validatedQty, unitPriceMinor)
+      if (item.discountMinor !== undefined && item.discountMinor > 0 && !auth.allow_discounts) {
+        throw HttpError.forbidden(
+          `Discounts are not permitted under offline authorization '${auth.id}'.`,
+          { field: `items[${i}].discountMinor` }
+        )
+      }
+
+      const authorizedSnapshotPriceMinor =
+        pricingSnapshot?.productPrices?.[product.id] ?? product.selling_price_minor
+
+      if (item.unitPriceMinor !== undefined && item.unitPriceMinor !== authorizedSnapshotPriceMinor) {
+        throw HttpError.forbidden(
+          `Submitted offline unit price for '${product.name}' (${item.unitPriceMinor} paise) does not match authorized pricing snapshot (${authorizedSnapshotPriceMinor} paise).`,
+          {
+            code: 'OFFLINE_PRICE_TAMPERED',
+            productId: product.id,
+            authorizedPriceMinor: authorizedSnapshotPriceMinor,
+            submittedPriceMinor: item.unitPriceMinor,
+          }
+        )
+      }
+
+      let unitPriceMinor = authorizedSnapshotPriceMinor
+      let originalUnitPriceMinor: number | null = null
+      let priceOverrideReason: string | null = null
+      let priceOverrideBy: string | null = null
+      let priceOverrideAt: string | null = null
+
+      // Detect live catalog price drift since offline authorization was issued
+      if (authorizedSnapshotPriceMinor !== product.selling_price_minor) {
+        const resolution = input.priceConflictResolution
+        if (!resolution) {
+          offlinePriceConflicts.push({
+            productId: product.id,
+            name: product.name,
+            authorizedPriceMinor: authorizedSnapshotPriceMinor,
+            currentCatalogPriceMinor: product.selling_price_minor,
+          })
+        } else {
+          if (!hasPermission(actorRole, 'price_override')) {
+            throw HttpError.forbidden(
+              `Resolving offline price conflict for '${product.name}' requires price_override permission.`
+            )
+          }
+          const reason = (resolution.reason || '').trim()
+          if (reason.length < 3) {
+            throw HttpError.badRequest(
+              'A conflict resolution reason (minimum 3 characters) is required for offline price drift.'
+            )
+          }
+          if (resolution.mode === 'accept_offline_price') {
+            unitPriceMinor = authorizedSnapshotPriceMinor
+            originalUnitPriceMinor = product.selling_price_minor
+            priceOverrideReason = reason
+            priceOverrideBy = userId
+            priceOverrideAt = nowIso
+            overrideAuditEntries.push({
+              action: 'SALE_PRICE_OVERRIDE',
+              diff: {
+                source: 'offline_price_conflict',
+                mode: resolution.mode,
+                productId: product.id,
+                currentCatalogPriceMinor: product.selling_price_minor,
+                acceptedOfflinePriceMinor: authorizedSnapshotPriceMinor,
+                reason,
+              },
+            })
+          } else {
+            unitPriceMinor = product.selling_price_minor
+            overrideAuditEntries.push({
+              action: 'OFFLINE_PRICE_CONFLICT_RESOLVED',
+              diff: {
+                source: 'offline_price_conflict',
+                mode: resolution.mode,
+                productId: product.id,
+                authorizedOfflinePriceMinor: authorizedSnapshotPriceMinor,
+                appliedCatalogPriceMinor: product.selling_price_minor,
+                reason,
+              },
+            })
+          }
+        }
+      }
+
+      const subtotalMinor = calculateLineSubtotalMinor(validatedQty, unitPriceMinor)
+      const serverTaxMinor = calculateTaxMinor(subtotalMinor, taxRateBps, taxInclusive)
+      if (item.taxMinor !== undefined && item.taxMinor !== serverTaxMinor) {
+        throw HttpError.forbidden(
+          `Offline tax override for '${product.name}' is not permitted.`,
+          {
+            field: `items[${i}].taxMinor`,
+            expectedTaxMinor: serverTaxMinor,
+            submittedTaxMinor: item.taxMinor,
+          }
+        )
+      }
+
+      const lineTotalMinor = taxInclusive ? subtotalMinor : subtotalMinor + serverTaxMinor
+      computedSubtotalMinor += subtotalMinor
+      computedTaxMinor += serverTaxMinor
       computedTotalMinor += lineTotalMinor
 
       processedLines.push({
@@ -471,18 +744,56 @@ export class OfflineService {
         allocation,
         quantity: validatedQty,
         unitPriceMinor,
+        originalUnitPriceMinor,
+        priceOverrideReason,
+        priceOverrideBy,
+        priceOverrideAt,
         unitCostMinor: product.purchase_price_minor,
+        subtotalMinor,
+        taxMinor: serverTaxMinor,
         lineTotalMinor,
       })
     }
 
-    // 6. Validate Cash Payment
+    if (offlinePriceConflicts.length > 0) {
+      throw new HttpError(
+        409,
+        'OFFLINE_PRICE_CONFLICT',
+        `Catalog price changed while terminal was offline for ${offlinePriceConflicts.map((c) => c.name).join(', ')}. Manager price conflict resolution is required.`,
+        { conflicts: offlinePriceConflicts }
+      )
+    }
+
+    // 6. Validate Cash Payment & Offline Authorization Aggregate Limits
     if (input.cashTenderedMinor < computedTotalMinor) {
       throw HttpError.badRequest(
         `Cash tendered (${input.cashTenderedMinor} paise) is less than total sale amount (${computedTotalMinor} paise).`
       )
     }
     const changeReturnedMinor = input.cashTenderedMinor - computedTotalMinor
+
+    const currentUsedTx = Number(auth.used_transactions ?? 0)
+    const currentUsedAmountMinor = Number(auth.used_total_amount_minor ?? 0)
+    if (currentUsedTx + 1 > auth.max_transactions) {
+      throw new HttpError(
+        422,
+        'OFFLINE_LIMIT_EXCEEDED',
+        `Offline authorization '${auth.id}' transaction limit (${auth.max_transactions}) exceeded.`,
+        { maxTransactions: auth.max_transactions, usedTransactions: currentUsedTx }
+      )
+    }
+    if (currentUsedAmountMinor + computedTotalMinor > auth.max_total_amount_minor) {
+      throw new HttpError(
+        422,
+        'OFFLINE_LIMIT_EXCEEDED',
+        `Offline authorization '${auth.id}' cumulative amount limit (${auth.max_total_amount_minor} paise) exceeded.`,
+        {
+          maxTotalAmountMinor: auth.max_total_amount_minor,
+          usedTotalAmountMinor: currentUsedAmountMinor,
+          attemptedAmountMinor: computedTotalMinor,
+        }
+      )
+    }
 
     // 7. Auto-provision or query Walk-in Customer for this business
     let walkIn = await this.db
@@ -494,13 +805,16 @@ export class OfflineService {
       const walkInId = `cust_walkin_${businessId}`
       await this.db
         .prepare(
-          `INSERT INTO customers (id, business_id, customer_code, name, type, is_walk_in, status, created_at, updated_at)
+          `INSERT OR IGNORE INTO customers (id, business_id, customer_code, name, type, is_walk_in, status, created_at, updated_at)
            VALUES (?, ?, 'WALKIN', 'Walk-in Customer', 'individual', 1, 'active', datetime('now'), datetime('now'))`
         )
         .bind(walkInId, businessId)
         .run()
 
-      walkIn = { id: walkInId, name: 'Walk-in Customer', customer_code: 'WALKIN' }
+      walkIn = (await this.db
+        .prepare('SELECT id, name, customer_code FROM customers WHERE business_id = ? AND is_walk_in = 1 LIMIT 1')
+        .bind(businessId)
+        .first<{ id: string; name: string; customer_code: string }>())!
     }
 
     const customerSnapshot = {
@@ -511,12 +825,10 @@ export class OfflineService {
     }
 
     // 8. Generate Primary Financial Keys
-    const saleId = `sale_${crypto.randomUUID()}`
     const invoiceId = `inv_${crypto.randomUUID()}`
     const paymentId = `pay_${crypto.randomUUID()}`
     const allocationId = `alloc_pay_${crypto.randomUUID()}`
     const businessDateKey = getCurrentBusinessDateKey()
-    const nowIso = now.toISOString()
     const timestamp = now.getTime()
 
     const saleNumber = `SALE-${timestamp.toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`
@@ -536,7 +848,7 @@ export class OfflineService {
              subtotal_minor, discount_type, discount_value, discount_minor, tax_minor,
              total_amount_minor, amount_paid_minor, remaining_balance_minor,
              change_returned_minor, status, business_date_key, idempotency_key, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fixed', 0, 0, 0, ?, ?, 0, ?, 'completed', ?, ?, datetime('now'), datetime('now'))`
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fixed', 0, 0, ?, ?, ?, 0, ?, 'completed', ?, ?, datetime('now'), datetime('now'))`
         )
         .bind(
           saleId,
@@ -550,7 +862,8 @@ export class OfflineService {
           input.terminalId || 'OFFLINE-POS',
           userId,
           cashierName,
-          computedTotalMinor,
+          computedSubtotalMinor,
+          computedTaxMinor,
           computedTotalMinor,
           computedTotalMinor,
           changeReturnedMinor,
@@ -559,16 +872,37 @@ export class OfflineService {
         )
     )
 
+    // Audit log entries for conflict resolution if any
+    for (const auditEntry of overrideAuditEntries) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO audit_logs (id, business_id, branch_id, user_id, action, entity_type, entity_id, diff_json, created_at)
+             VALUES (?, ?, ?, ?, ?, 'sale', ?, ?, datetime('now'))`
+          )
+          .bind(
+            `aud_${crypto.randomUUID()}`,
+            businessId,
+            branchId,
+            userId,
+            auditEntry.action,
+            saleId,
+            JSON.stringify(auditEntry.diff)
+          )
+      )
+    }
+
     // Statement 2: Insert Sale Items
     for (const line of processedLines) {
       statements.push(
         this.db
           .prepare(
             `INSERT INTO sale_items (
-               id, sale_id, product_id, sku, product_name, unit, unit_price_minor, unit_cost_minor,
-               cogs_estimated, quantity, subtotal_minor, discount_minor, tax_minor, line_total_minor,
+               id, sale_id, product_id, sku, product_name, unit,
+               unit_price_minor, original_unit_price_minor, price_override_reason, price_override_by, price_override_at,
+               unit_cost_minor, cogs_estimated, quantity, subtotal_minor, discount_minor, tax_minor, line_total_minor,
                returned_quantity
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 0, ?, 0.0)`
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, 0.0)`
           )
           .bind(
             line.id,
@@ -578,92 +912,112 @@ export class OfflineService {
             line.product.name,
             line.product.unit,
             line.unitPriceMinor,
+            line.originalUnitPriceMinor,
+            line.priceOverrideReason,
+            line.priceOverrideBy,
+            line.priceOverrideAt,
             line.unitCostMinor,
             line.quantity,
-            line.lineTotalMinor,
+            line.subtotalMinor,
+            line.taxMinor,
             line.lineTotalMinor
           )
       )
 
-      // Statement 3: Insert Stock Movement
-      const prevQty = stockMap.get(line.product.id) ?? 0
-      const nextQty = prevQty - line.quantity
-      stockMap.set(line.product.id, nextQty)
-
-      const movementId = `mov_${crypto.randomUUID()}`
-      const movementNumber = `SM-${timestamp.toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`
-      statements.push(
-        this.db
-          .prepare(
-            `INSERT INTO stock_movements (
-               id, business_id, branch_id, movement_number, product_id, type,
-               quantity_change, previous_quantity, new_quantity, unit_cost_minor,
-               reference_type, reference_id, reference_number, notes, business_date_key,
-               created_by, created_at
-             ) VALUES (?, ?, ?, ?, ?, 'sale', ?, ?, ?, ?, 'sale', ?, ?, 'Offline POS Cash Sale', ?, ?, datetime('now'))`
-          )
-          .bind(
-            movementId,
-            businessId,
-            branchId,
-            movementNumber,
-            line.product.id,
-            -line.quantity,
-            prevQty,
-            nextQty,
-            line.unitCostMinor,
-            saleId,
-            saleNumber,
-            businessDateKey,
-            userId
-          )
-      )
-
-      // Statement 4: Decrement Physical Inventory Balance
-      statements.push(
-        this.db
-          .prepare(
-            `UPDATE inventory_balances
-             SET quantity_on_hand = quantity_on_hand - ?, updated_at = datetime('now')
-             WHERE business_id = ? AND branch_id = ? AND product_id = ?`
-          )
-          .bind(line.quantity, businessId, branchId, line.product.id)
-      )
-
-      // Statement 5: Consume Device Allocation Quota (Guarded by CHECK constraint: consumed_quantity <= allocated_quantity)
+      // Statement 3: Consume Device Allocation Quota (Guarded by CHECK constraint: consumed_quantity <= allocated_quantity)
       statements.push(
         this.db
           .prepare(
             `UPDATE device_stock_allocations
              SET consumed_quantity = consumed_quantity + ?, updated_at = datetime('now')
-             WHERE id = ? AND authorization_id = ?`
+             WHERE id = ? AND authorization_id = ? AND business_id = ?`
           )
-          .bind(line.quantity, line.allocation.id, auth.id)
+          .bind(line.quantity, line.allocation.id, auth.id, businessId)
       )
 
-      // Statement 6: Multi-Device Change Feed Log for Stock Changes
-      const eventId = `evt_${crypto.randomUUID()}`
-      statements.push(
-        this.db
-          .prepare(
-            `INSERT INTO sync_change_log (
-               business_id, branch_id, resource_type, resource_id, resource_version,
-               operation, payload, event_id, created_at
-             ) VALUES (?, ?, 'stock', ?, 1, 'upsert', ?, ?, datetime('now'))`
-          )
-          .bind(
+      if (line.product.track_inventory) {
+        const movementId = `mov_${crypto.randomUUID()}`
+        const movementNumber = `SM-${timestamp.toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
+
+        // Statement 4: Ensure inventory balance row exists initialized to 0.0
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT OR IGNORE INTO inventory_balances (
+                 id, business_id, branch_id, product_id, quantity_on_hand, updated_at
+               ) VALUES (?, ?, ?, ?, 0.0, datetime('now'))`
+            )
+            .bind(`bal_${crypto.randomUUID()}`, businessId, branchId, line.product.id)
+        )
+
+        // Statement 5: Insert Stock Movement reading live in-transaction inventory balance
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT INTO stock_movements (
+                 id, business_id, branch_id, movement_number, product_id, type,
+                 quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+                 reference_type, reference_id, reference_number, notes, business_date_key,
+                 created_by, created_at
+               ) VALUES (
+                 ?, ?, ?, ?, ?, 'sale',
+                 ?,
+                 COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+                 COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) - ?,
+                 ?, 'sale', ?, ?, 'Offline POS Cash Sale', ?, ?, datetime('now')
+               )`
+            )
+            .bind(
+              movementId,
+              businessId,
+              branchId,
+              movementNumber,
+              line.product.id,
+              -line.quantity,
+              businessId,
+              branchId,
+              line.product.id,
+              businessId,
+              branchId,
+              line.product.id,
+              line.quantity,
+              line.unitCostMinor,
+              saleId,
+              saleNumber,
+              businessDateKey,
+              userId
+            )
+        )
+
+        // Statement 6: Decrement Physical Inventory Balance
+        statements.push(
+          this.db
+            .prepare(
+              `UPDATE inventory_balances
+               SET quantity_on_hand = quantity_on_hand - ?, updated_at = datetime('now')
+               WHERE business_id = ? AND branch_id = ? AND product_id = ?`
+            )
+            .bind(line.quantity, businessId, branchId, line.product.id)
+        )
+
+        // Statement 7: Multi-Device Change Feed Log with Authoritative Post-Commit quantityOnHand
+        statements.push(
+          this.changeLogRepo.createLiveStockChangeEventStatement({
             businessId,
             branchId,
-            line.product.id,
-            JSON.stringify({
-              productId: line.product.id,
-              branchId,
+            productId: line.product.id,
+            resourceId: line.product.id,
+            resourceVersion: 1,
+            unit: line.product.unit,
+            updatedAt: nowIso,
+            eventId: `evt_${crypto.randomUUID()}`,
+            extraPayload: {
               quantityDeducted: line.quantity,
               reason: 'offline_sale_commit',
-            }),
-            eventId
-          )
-      )
+            },
+          })
+        )
+      }
     }
 
     // Statement 7: Insert Invoice
@@ -747,7 +1101,26 @@ export class OfflineService {
       createdAt: nowIso,
     }
 
-    // Statement 11: Idempotency Key Insert
+    // Statement 11: Atomically Track Authorization Usage & Guard Aggregate Caps
+    statements.push(
+      this.db
+        .prepare(
+          `UPDATE offline_authorizations
+           SET used_transactions = CASE
+                 WHEN used_transactions + 1 <= max_transactions THEN used_transactions + 1
+                 ELSE NULL
+               END,
+               used_total_amount_minor = CASE
+                 WHEN used_total_amount_minor + ? <= max_total_amount_minor THEN used_total_amount_minor + ?
+                 ELSE NULL
+               END,
+               updated_at = datetime('now')
+           WHERE id = ? AND business_id = ? AND status = 'active'`
+        )
+        .bind(computedTotalMinor, computedTotalMinor, auth.id, businessId)
+    )
+
+    // Statement 12: Idempotency Key Insert
     if (idempotencyKey) {
       statements.push(
         buildIdempotencyInsertStatement(
@@ -763,7 +1136,25 @@ export class OfflineService {
     }
 
     // 8. Execute Atomic D1 Batch
-    await this.db.batch(statements)
+    try {
+      await this.db.batch(statements)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('NOT NULL constraint failed: offline_authorizations')) {
+        throw new HttpError(
+          422,
+          'OFFLINE_LIMIT_EXCEEDED',
+          'Offline authorization transaction or cumulative amount cap exceeded during sync commit.'
+        )
+      }
+      if (err instanceof Error && err.message.includes('CHECK constraint failed')) {
+        throw new HttpError(
+          422,
+          'ALLOCATION_EXCEEDS_BALANCE',
+          'Offline allocation quota exceeded during concurrent sync commit.'
+        )
+      }
+      throw err
+    }
 
     return responseDTO
   }
@@ -773,7 +1164,8 @@ export class OfflineService {
    */
   async reconcileAllocation(
     businessId: string,
-    allocationId: string
+    allocationId: string,
+    authorizedBranchIds?: string[]
   ): Promise<AllocationReconciliationResponse> {
     const alloc = await this.db
       .prepare('SELECT * FROM device_stock_allocations WHERE id = ? AND business_id = ? LIMIT 1')
@@ -782,6 +1174,10 @@ export class OfflineService {
 
     if (!alloc) {
       throw HttpError.notFound(`Stock allocation '${allocationId}' not found.`)
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(alloc.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to reconcile stock allocations in this branch.')
     }
 
     const nowIso = new Date().toISOString()
@@ -825,6 +1221,11 @@ export class OfflineService {
       this.db
         .prepare('UPDATE devices SET status = ?, updated_at = ? WHERE id = ? AND business_id = ?')
         .bind('revoked', nowIso, deviceId, businessId),
+      this.db
+        .prepare(
+          'UPDATE offline_authorizations SET status = ?, updated_at = ? WHERE business_id = ? AND device_id = ? AND status = ?'
+        )
+        .bind('revoked', nowIso, businessId, deviceId, 'active'),
       this.db
         .prepare(
           'UPDATE device_stock_allocations SET status = ?, reconciled_at = ?, updated_at = ? WHERE business_id = ? AND device_id = ? AND status = ?'

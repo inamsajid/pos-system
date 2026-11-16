@@ -1,16 +1,21 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/context/useAuth'
+import { queryKeys } from '../../../api/queryKeys'
 import { expenseService } from '../services/expenseService'
 import type { ExpenseDraft, ExpenseFilterParams } from '../types/expense.types'
 
 export function useExpenses(filters: ExpenseFilterParams = {}) {
-  const { activeBusiness, activeBranch } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
-  const branchId = filters.branchId || activeBranch?.id || 'all'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: filters.branchId || activeBranch?.id,
+  }
 
   const query = useQuery({
-    queryKey: ['expenses', businessId, branchId, filters],
-    queryFn: () => expenseService.getExpenses({ ...filters, branchId: filters.branchId || activeBranch?.id }),
+    queryKey: queryKeys.expenses.list(filters as Record<string, unknown>, scope),
+    queryFn: () =>
+      expenseService.getExpenses({ ...filters, branchId: filters.branchId || activeBranch?.id }),
     staleTime: 30_000,
   })
 
@@ -28,12 +33,15 @@ export function useExpenses(filters: ExpenseFilterParams = {}) {
 }
 
 export function useExpenseSummary() {
-  const { activeBusiness, activeBranch } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
-  const branchId = activeBranch?.id || 'all'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   return useQuery({
-    queryKey: ['expenseSummary', businessId, branchId],
+    queryKey: queryKeys.expenses.summary(scope),
     queryFn: () => expenseService.getExpenseSummary(),
     staleTime: 30_000,
   })
@@ -45,9 +53,9 @@ export function useCreateExpense() {
   return useMutation({
     mutationFn: (draft: ExpenseDraft) => expenseService.createExpense(draft),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenses'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenses.all })
       void queryClient.invalidateQueries({ queryKey: ['expenseSummary'] })
-      void queryClient.invalidateQueries({ queryKey: ['expenseCategories'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenseCategories.all })
     },
   })
 }
@@ -59,7 +67,7 @@ export function useVoidExpense() {
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       expenseService.voidExpense(id, reason),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenses'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenses.all })
       void queryClient.invalidateQueries({ queryKey: ['expenseSummary'] })
     },
   })
@@ -77,8 +85,7 @@ export function useUpdateExpense() {
       updates: { title?: string; notes?: string; receiptAttachmentUrl?: string }
     }) => expenseService.updateExpense(id, updates),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenses'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenses.all })
     },
   })
 }
-

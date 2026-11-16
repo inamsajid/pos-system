@@ -40,10 +40,10 @@ describe('Step 13.8: Complete Offline POS, Synchronization & Multi-Device Accept
   let salesServiceA: OfflineSalesService
 
   let dbB: NorthstarOfflineDatabase
-  let repoB: OfflineSalesRepository
+  let _repoB: OfflineSalesRepository
   let outboxRepoB: OutboxRepository
   let dispatcherB: OutboxDispatcher
-  let outboxServiceB: OutboxService
+  let _outboxServiceB: OutboxService
 
   beforeEach(async () => {
     vi.restoreAllMocks()
@@ -66,10 +66,10 @@ describe('Step 13.8: Complete Offline POS, Synchronization & Multi-Device Accept
     // 3. Initialize Device B IndexedDB Context (Distinct Database)
     dbB = new NorthstarOfflineDatabase(`e2e_db_dev_b_${Date.now()}_${Math.random()}`)
     await dbB.clearAllOfflineData()
-    repoB = new OfflineSalesRepository(dbB)
+    _repoB = new OfflineSalesRepository(dbB)
     outboxRepoB = new OutboxRepository(dbB)
     dispatcherB = new OutboxDispatcher({ repository: outboxRepoB, registry: commandRegistry })
-    outboxServiceB = new OutboxService(outboxRepoB, dispatcherB)
+    _outboxServiceB = new OutboxService(outboxRepoB, dispatcherB)
 
     // 4. Seed Online Baseline Entities
     sqlite.prepare(`

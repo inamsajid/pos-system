@@ -1,18 +1,37 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { formatBusinessDate } from '../../../lib/date'
 import { getProductStock } from '../../inventory/services/inventoryService'
-import { getPurchaseById, createGoodsReceipt } from '../services/purchaseService'
+import { fetchPurchaseById, getPurchaseById, createGoodsReceipt } from '../services/purchaseService'
+import type { Purchase } from '../types/purchase.types'
 
 export function GoodsReceiptPage() {
-  const { purchaseId = '' } = useParams(); const navigate = useNavigate(); const purchase = getPurchaseById(purchaseId)
+  const { purchaseId = '' } = useParams(); const navigate = useNavigate()
+  const [purchase, setPurchase] = useState<Purchase | null>(() => getPurchaseById(purchaseId) ?? null)
+  const [loading, setLoading] = useState(!purchase)
   const [quantities, setQuantities] = useState<Record<string, string>>({}); const [notes, setNotes] = useState(''); const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
   const [requestId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `receipt-${Date.now()}`)
+
+  useEffect(() => {
+    let active = true
+    if (!purchase && purchaseId) {
+      setLoading(true)
+      void fetchPurchaseById(purchaseId).then(res => {
+        if (active) {
+          setPurchase(res ?? null)
+          setLoading(false)
+        }
+      })
+    }
+    return () => { active = false }
+  }, [purchaseId])
+
+  if (loading) return <div className="p-8 text-center text-sm text-slate-500" role="status">Loading purchase details…</div>
   if (!purchase) return <PageHeader title="Purchase not found" description="This purchase is not available." action={<Link to="/purchases"><Button>Back to purchases</Button></Link>} />
-  if (!['ordered', 'partially_received'].includes(purchase.status)) return <PageHeader title="Goods receipt unavailable" description="Draft, received and cancelled purchases cannot receive additional stock." action={<Link to={`/purchases/${purchase.id}`}><Button>Back to purchase</Button></Link>} />
+  if (!['ordered', 'partially_received', 'confirmed'].includes(purchase.status)) return <PageHeader title="Goods receipt unavailable" description="Draft, received and cancelled purchases cannot receive additional stock." action={<Link to={`/purchases/${purchase.id}`}><Button>Back to purchase</Button></Link>} />
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setError('')
     const selected = purchase.items.filter(item => (Number(quantities[item.id]) || 0) > 0)

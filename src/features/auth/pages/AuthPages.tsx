@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate, useLocation, Navigate } from 'react-router-dom'
+import { Link, useNavigate, useLocation, useSearchParams, Navigate } from 'react-router-dom'
 import { ArrowRight, Boxes, AlertCircle, Loader2 } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
 import { apiClient } from '../../../lib/api-client'
+import { AcceptInvitationPage } from './AcceptInvitationPage'
 
 export function LoginPage() {
   const { signIn, status } = useAuth()
@@ -108,6 +109,9 @@ export function LoginPage() {
 }
 
 export function RegisterPage() {
+  const [searchParams] = useSearchParams()
+  const invitationToken = searchParams.get('invitation') || searchParams.get('token')
+
   const { signIn, status } = useAuth()
   const navigate = useNavigate()
   const [name, setName] = useState('')
@@ -116,6 +120,10 @@ export function RegisterPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  if (invitationToken) {
+    return <AcceptInvitationPage />
+  }
 
   if (status === 'authenticated') {
     return <Navigate to="/dashboard" replace />
@@ -236,9 +244,6 @@ export function RegisterPage() {
 }
 
 export function ForgotPasswordPage() {
-  const [submitted, setSubmitted] = useState(false)
-  const [email, setEmail] = useState('')
-
   return (
     <div>
       <div className="mb-8 flex items-center gap-2 lg:hidden">
@@ -247,43 +252,28 @@ export function ForgotPasswordPage() {
         </span>
         <strong>Northstar POS</strong>
       </div>
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Reset your password</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Password reset unavailable</h1>
       <p className="mt-2 text-sm text-slate-500">
-        Enter your email address and we will provide password reset instructions.
+        Automated email or SMS password recovery is not configured for this workspace.
       </p>
 
-      {submitted ? (
-        <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-xs font-medium text-emerald-800">
-          If an account exists for {email}, a recovery link has been prepared. Please check with your store administrator.
+      <div
+        role="status"
+        className="mt-6 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-900"
+      >
+        <div className="flex items-center gap-2 font-semibold">
+          <AlertCircle size={16} className="shrink-0 text-amber-700" />
+          <span>Self-service password reset is not active</span>
         </div>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            setSubmitted(true)
-          }}
-          className="mt-6 space-y-4"
-        >
-          <label className="block text-xs font-semibold text-slate-700">
-            Email address
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500"
-              placeholder="you@company.com"
-            />
-          </label>
-          <button
-            type="submit"
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700"
-          >
-            <span>Send reset link</span>
-            <ArrowRight size={15} />
-          </button>
-        </form>
-      )}
+        <p>
+          To regain access to your account, contact your business owner or system administrator to
+          re-provision your workspace credentials.
+        </p>
+        <p className="text-amber-800/90">
+          Administrators: outbound email/SMS delivery infrastructure and reset-token handlers must
+          be configured before self-service reset links can be issued.
+        </p>
+      </div>
 
       <div className="mt-6 text-center text-xs text-slate-500">
         <Link className="font-semibold text-blue-600 hover:underline" to="/login">

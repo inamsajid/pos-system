@@ -3,10 +3,25 @@
  * Uses Web Crypto API natively supported in Cloudflare Workers and Node.js test environment.
  */
 
+function normalizeCanonical(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeCanonical(item))
+  }
+  if (value !== null && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {}
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const val = (value as Record<string, unknown>)[key]
+      if (val !== undefined) {
+        sorted[key] = normalizeCanonical(val)
+      }
+    }
+    return sorted
+  }
+  return value
+}
+
 function canonicalStringify(obj: Record<string, unknown>): string {
-  const sortedKeys = Object.keys(obj).sort()
-  const parts = sortedKeys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(obj[k])}`)
-  return `{${parts.join(',')}}`
+  return JSON.stringify(normalizeCanonical(obj))
 }
 
 function bufferToHex(buffer: ArrayBuffer): string {
@@ -43,6 +58,18 @@ export interface OfflineAuthEnvelope {
   productIds: string[]
 }
 
+export interface OfflinePricingSnapshot {
+  authorizationId: string
+  businessId: string
+  branchId: string
+  maxTransactions: number
+  maxTotalAmountMinor: number
+  allowDiscounts: boolean
+  taxRateBps: number
+  taxInclusive: boolean
+  productPrices: Record<string, number>
+}
+
 export async function signAuthorizationPayload(
   secret: string,
   payload: OfflineAuthEnvelope
@@ -77,6 +104,51 @@ export async function verifyAuthorizationPayload(
     )
 
     const canonicalJson = canonicalStringify(payload as unknown as Record<string, unknown>)
+    const expectedBuffer = await crypto.subtle.sign('HMAC', key, enc.encode(canonicalJson))
+    const expectedHex = bufferToHex(expectedBuffer)
+
+    const a = hexToBuffer(expectedHex)
+    const b = hexToBuffer(signatureHex)
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
+
+export async function signPricingSnapshot(
+  secret: string,
+  snapshot: OfflinePricingSnapshot
+): Promise<string> {
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+
+  const canonicalJson = canonicalStringify(snapshot as unknown as Record<string, unknown>)
+  const signatureBuffer = await crypto.subtle.sign('HMAC', key, enc.encode(canonicalJson))
+  return bufferToHex(signatureBuffer)
+}
+
+export async function verifyPricingSnapshot(
+  secret: string,
+  snapshot: OfflinePricingSnapshot,
+  signatureHex: string
+): Promise<boolean> {
+  try {
+    const enc = new TextEncoder()
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    )
+
+    const canonicalJson = canonicalStringify(snapshot as unknown as Record<string, unknown>)
     const expectedBuffer = await crypto.subtle.sign('HMAC', key, enc.encode(canonicalJson))
     const expectedHex = bufferToHex(expectedBuffer)
 

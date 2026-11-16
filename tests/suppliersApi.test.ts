@@ -124,10 +124,10 @@ describe('Supplier Master Data API (/api/v1/suppliers)', () => {
     `)
 
     const sA = await createSession(d1, userAId, '127.0.0.1', 'Vitest')
-    sessionTokenA = sA.session.token
+    sessionTokenA = sA.token
 
     const sB = await createSession(d1, userBId, '127.0.0.1', 'Vitest')
-    sessionTokenB = sB.session.token
+    sessionTokenB = sB.token
   })
 
   it('POST /api/v1/suppliers creates a supplier with auto-generated supplier code', async () => {

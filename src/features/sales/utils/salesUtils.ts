@@ -5,7 +5,8 @@ import { isWithinBusinessDateRange, getBusinessDatePreset } from '../../../lib/b
 export type SalePaymentStatus = 'paid' | 'partial' | 'unpaid'
 
 export function paidAmount(sale: CheckoutSale) {
-  return Math.round((getInvoicePayments(sale.id).reduce((sum, p) => sum + p.allocations.filter(a => a.saleId === sale.id).reduce((n, a) => n + a.amount, 0), 0) + Number.EPSILON) * 100) / 100
+  const localPaymentsPaid = Math.round((getInvoicePayments(sale.id).reduce((sum, p) => sum + p.allocations.filter(a => a.saleId === sale.id).reduce((n, a) => n + a.amount, 0), 0) + Number.EPSILON) * 100) / 100
+  return Math.max(localPaymentsPaid, sale.amountPaid ?? 0)
 }
 
 export function getPaymentStatus(sale: CheckoutSale): SalePaymentStatus {

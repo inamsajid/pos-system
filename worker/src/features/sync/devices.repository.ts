@@ -1,3 +1,4 @@
+import { HttpError } from '../../lib/errors'
 import type { DeviceRow, RegisterDeviceInput } from './sync.types'
 
 export class DevicesRepository {
@@ -24,16 +25,20 @@ export class DevicesRepository {
       .first<DeviceRow>()
 
     if (existing) {
-      // If device was revoked, keep revoked unless re-activated by an explicit registration
-      const newStatus = 'active'
+      if (existing.status === 'revoked') {
+        throw HttpError.forbidden(
+          'Device registration has been revoked by an administrator and cannot be reactivated via registration.'
+        )
+      }
+
       const updated = await this.db
         .prepare(
           `UPDATE devices
-           SET label = COALESCE(?, label), status = ?, last_seen_at = datetime('now'), updated_at = datetime('now')
+           SET label = COALESCE(?, label), status = 'active', last_seen_at = datetime('now'), updated_at = datetime('now')
            WHERE id = ?
            RETURNING *`
         )
-        .bind(label, newStatus, existing.id)
+        .bind(label, existing.id)
         .first<DeviceRow>()
 
       if (!updated) {

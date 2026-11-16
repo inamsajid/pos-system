@@ -25,6 +25,7 @@ export const ALLOWED_CATEGORIES: FileCategory[] = [
   'business_logo',
   'invoice_pdf',
   'receipt_attachment',
+  'expense_receipt',
   'purchase_document',
   'supplier_document',
   'report_export',
@@ -41,6 +42,7 @@ export const ALLOWED_RELATED_TYPES: FileRelatedType[] = [
   'supplier',
   'customer',
   'report',
+  'expense',
 ]
 
 /**

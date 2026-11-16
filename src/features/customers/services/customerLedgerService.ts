@@ -10,7 +10,7 @@ function isExplicitDemo(): boolean {
 }
 
 export type LedgerEntry = AccountTransaction & {
-  type: 'opening' | 'invoice' | 'payment'
+  type: 'opening' | 'invoice' | 'payment' | 'credit_note' | 'void' | 'adjustment'
   invoiceNumber?: string
   paymentId?: string
 }
@@ -102,10 +102,11 @@ export function getCustomerLedger(customerId: string): LedgerEntry[] {
       type: 'payment',
       paymentId: payment.id,
     })
+  const typeOrder: Record<string, number> = { opening: 0, invoice: 1, payment: 2, credit_note: 3, adjustment: 4, void: 5 }
   entries.sort(
     (a, b) =>
       a.date.localeCompare(b.date) ||
-      { opening: 0, invoice: 1, payment: 2 }[a.type] - { opening: 0, invoice: 1, payment: 2 }[b.type] ||
+      (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99) ||
       a.id.localeCompare(b.id)
   )
   let balance = 0
@@ -157,7 +158,7 @@ export async function fetchCustomerLedger(customerId: string): Promise<LedgerEnt
       debit: entry.debitMinor / 100,
       credit: entry.creditMinor / 100,
       balance: entry.balanceMinor / 100,
-      type: entry.type === 'invoice' ? 'invoice' : entry.type === 'payment' ? 'payment' : 'opening',
+      type: entry.type as any,
       invoiceNumber: entry.type === 'invoice' ? entry.referenceNumber : undefined,
       paymentId: entry.type === 'payment' ? entry.referenceId : undefined,
     }))
@@ -184,7 +185,7 @@ export async function fetchCustomerLedgerSummary(customerId: string): Promise<Cu
       totalPurchases: dto.totalInvoicedMinor / 100,
       totalPaid: dto.totalPaidMinor / 100,
       outstandingBalance: dto.currentBalanceMinor / 100,
-      advanceBalance: 0,
+      advanceBalance: ((dto as any).unallocatedAdvanceMinor ?? 0) / 100,
       openingBalance: dto.openingBalanceMinor / 100,
       currentAccountBalance: dto.currentBalanceMinor / 100,
       lastPurchaseDate: undefined,

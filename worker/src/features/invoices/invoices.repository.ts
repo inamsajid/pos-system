@@ -50,15 +50,17 @@ export class InvoicesRepository {
     const conditions: string[] = ['i.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    // Branch scoping
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    // Branch scoping (fail closed if empty)
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('i.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`i.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -144,10 +146,11 @@ export class InvoicesRepository {
     invoiceId: string,
     authorizedBranchIds: string[]
   ): Promise<InvoiceDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND i.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND i.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT i.*, c.name as customer_name, s.customer_snapshot_json
@@ -249,10 +252,11 @@ export class InvoicesRepository {
     saleId: string,
     authorizedBranchIds: string[]
   ): Promise<InvoiceDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND i.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND i.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT i.*, c.name as customer_name, s.customer_snapshot_json

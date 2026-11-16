@@ -45,14 +45,16 @@ export class GoodsReceiptsRepository {
     const conditions: string[] = ['gr.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('gr.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`gr.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -129,10 +131,11 @@ export class GoodsReceiptsRepository {
     receiptId: string,
     authorizedBranchIds: string[]
   ): Promise<GoodsReceiptDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND gr.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND gr.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT gr.*, s.name as supplier_name, b.name as branch_name, u.name as receiver_name,

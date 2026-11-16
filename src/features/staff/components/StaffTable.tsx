@@ -24,7 +24,7 @@ export const StaffTable: React.FC<StaffTableProps> = ({
   onReactivate,
   onViewDetails,
   currentUserId,
-  currentUserRole = 'owner',
+  currentUserRole = 'cashier',
   emptyMessage = 'No staff members match the selected filters.',
 }) => {
   const getRoleBadge = (role: StaffRole) => {

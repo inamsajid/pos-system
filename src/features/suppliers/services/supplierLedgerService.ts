@@ -10,7 +10,7 @@ function isExplicitDemo(): boolean {
 }
 
 export type SupplierLedgerEntry = SupplierTransaction & {
-  type: 'opening' | 'purchase' | 'payment'
+  type: 'opening' | 'purchase' | 'bill' | 'payment' | 'debit_note' | 'adjustment'
   purchaseId?: string
   paymentId?: string
 }
@@ -100,10 +100,11 @@ export function getSupplierLedger(supplierId: string): SupplierLedgerEntry[] {
       type: 'payment',
       paymentId: payment.id,
     })
+  const typeOrder: Record<string, number> = { opening: 0, purchase: 1, payment: 2, bill: 3, debit_note: 4, adjustment: 5 }
   entries.sort(
     (a, b) =>
       a.date.localeCompare(b.date) ||
-      { opening: 0, purchase: 1, payment: 2 }[a.type] - { opening: 0, purchase: 1, payment: 2 }[b.type] ||
+      (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99) ||
       a.id.localeCompare(b.id)
   )
   let balance = 0
@@ -145,7 +146,7 @@ export async function fetchSupplierLedger(supplierId: string): Promise<SupplierL
       debit: entry.debitMinor / 100,
       credit: entry.creditMinor / 100,
       balance: entry.balanceMinor / 100,
-      type: entry.type === 'bill' ? 'purchase' : entry.type === 'payment' ? 'payment' : 'opening',
+      type: entry.type === 'bill' ? 'purchase' : (entry.type as any),
       purchaseId: entry.type === 'bill' ? entry.referenceId : undefined,
       paymentId: entry.type === 'payment' ? entry.referenceId : undefined,
     }))
@@ -163,7 +164,7 @@ export async function fetchSupplierLedgerSummary(
       totalPurchases: dto.totalBilledMinor / 100,
       totalPaid: dto.totalPaidMinor / 100,
       outstandingPayable: dto.currentPayableMinor / 100,
-      advanceBalance: 0,
+      advanceBalance: ((dto as any).unallocatedAdvanceMinor ?? 0) / 100,
       openingPayable: dto.openingPayableMinor / 100,
       lastPurchaseDate: dto.earliestUnpaidPurchaseDate || undefined,
       currentAccountBalance: dto.currentPayableMinor / 100,

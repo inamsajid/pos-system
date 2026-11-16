@@ -8,7 +8,7 @@ import type { UserRole } from '../../features/auth/types'
 
 export function MobileNavigation({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { activeBusiness } = useAuth()
-  const userRole: UserRole = (activeBusiness?.role as UserRole) || 'owner'
+  const userRole: UserRole | null = (activeBusiness?.role as UserRole | undefined) ?? null
 
   const accessibleGroups = useMemo(() => {
     return navigationGroups
@@ -18,7 +18,7 @@ export function MobileNavigation({ open, onClose }: { open: boolean; onClose: ()
           if (item.requiredPermission && !hasPermission(userRole, item.requiredPermission)) {
             return false
           }
-          if (item.requiredRoles && !item.requiredRoles.includes(userRole)) {
+          if (item.requiredRoles && (!userRole || !item.requiredRoles.includes(userRole))) {
             return false
           }
           return true
@@ -52,7 +52,7 @@ export function MobileNavigation({ open, onClose }: { open: boolean; onClose: ()
               <Boxes size={18} />
             </span>
             <div>
-              <strong className="text-sm">{activeBusiness?.name || 'Northstar Market'}</strong>
+              <strong className="text-sm">{activeBusiness?.name || 'Store Workspace'}</strong>
               <div className="text-[11px] text-slate-400">Retail workspace</div>
             </div>
           </div>

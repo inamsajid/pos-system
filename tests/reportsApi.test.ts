@@ -227,11 +227,11 @@ describe('Reports & Analytics APIs (Step 12.6)', () => {
     expect(data.inventory.outOfStockProductsCount).toBe(0)
     expect(data.inventory.totalQuantityOnHand).toBe(44) // 25 + 4 + 15
 
-    // Financial honesty: expenses & netProfit must explicitly report isAvailable: false
-    expect(data.financial.expenses.isAvailable).toBe(false)
-    expect(data.financial.expenses.reason).toMatch(/not yet implemented/i)
-    expect(data.financial.netProfit.isAvailable).toBe(false)
-    expect(data.financial.netProfit.reason).toMatch(/expense tracking/i)
+    // Financial honesty: expenses & netProfit are available and report real totals
+    expect(data.financial.expenses.isAvailable).toBe(true)
+    expect(data.financial.expenses.data.totalExpensesMinor).toBeDefined()
+    expect(data.financial.netProfit.isAvailable).toBe(true)
+    expect(data.financial.netProfit.data.netProfitMinor).toBeDefined()
   })
 
   it('calculates dashboard sales and collections accurately without double counting', async () => {

@@ -3,6 +3,7 @@ export type FileCategory =
   | 'business_logo'
   | 'invoice_pdf'
   | 'receipt_attachment'
+  | 'expense_receipt'
   | 'purchase_document'
   | 'supplier_document'
   | 'report_export'
@@ -18,6 +19,7 @@ export type FileRelatedType =
   | 'supplier'
   | 'customer'
   | 'report'
+  | 'expense'
 
 export type FileStatus = 'pending' | 'available' | 'deleted' | 'failed'
 

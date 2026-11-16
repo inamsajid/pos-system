@@ -46,7 +46,7 @@ export function AddPurchasePage() {
     if (!lines.length || lines.some(line => !line.productId)) { setError('Select a product for each purchase line.'); return }
     if (shouldConfirm && !window.confirm(`Confirm purchase for ${selectedSupplier.name}?\nTotal: ${formatCurrency(grandTotal)}\nConfirming creates the payable bill but does not increase stock. Goods must be received separately.`)) return
     setSaving(true)
-    try { const data = draft(); const saved = purchaseId ? await updatePurchaseDraft(purchaseId, data) : await createPurchaseDraft(data); if (shouldConfirm) confirmPurchase(saved.id); navigate(`/purchases/${saved.id}`, { state: { notice: shouldConfirm ? 'Purchase confirmed. Receive stock when the goods arrive.' : 'Purchase draft saved.' } }) }
+    try { const data = draft(); const saved = purchaseId ? await updatePurchaseDraft(purchaseId, data) : await createPurchaseDraft(data); if (shouldConfirm) await confirmPurchase(saved.id); navigate(`/purchases/${saved.id}`, { state: { notice: shouldConfirm ? 'Purchase confirmed. Receive stock when the goods arrive.' : 'Purchase draft saved.' } }) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to save purchase.') } finally { setSaving(false) }
   }
   return <><PageHeader title={purchaseId ? 'Edit purchase draft' : 'New purchase'} description="Create a supplier order with price snapshots. Confirming the order does not increase inventory." action={<Link to="/purchases"><Button>Back to purchases</Button></Link>} />

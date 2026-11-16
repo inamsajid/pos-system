@@ -4,10 +4,13 @@ export type StandardErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'OFFLINE_PRICE_CONFLICT'
   | 'INSUFFICIENT_STOCK'
   | 'ALLOCATION_EXCEEDS_BALANCE'
+  | 'OFFLINE_LIMIT_EXCEEDED'
   | 'DATABASE_UNAVAILABLE'
   | 'RATE_LIMITED'
+  | 'CONFIGURATION_ERROR'
   | 'INTERNAL_SERVER_ERROR'
 
 export class HttpError extends Error {
@@ -31,8 +34,8 @@ export class HttpError extends Error {
     return new HttpError(401, 'AUTHENTICATION_REQUIRED', message)
   }
 
-  static forbidden(message: string = 'Access denied.'): HttpError {
-    return new HttpError(403, 'FORBIDDEN', message)
+  static forbidden(message: string = 'Access denied.', details?: Record<string, unknown>): HttpError {
+    return new HttpError(403, 'FORBIDDEN', message, details)
   }
 
   static notFound(message: string = 'Resource not found.'): HttpError {

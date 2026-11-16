@@ -32,6 +32,7 @@ interface CustomerRow {
 
 interface InvoiceCheckRow {
   id: string
+  branch_id: string
   sale_id: string
   invoice_number: string
   customer_id: string
@@ -100,8 +101,13 @@ export class CustomerPaymentsService {
     branchId: string,
     receivedById: string,
     input: CreateCustomerPaymentInput,
-    idempotencyKey?: string | null
+    idempotencyKey?: string | null,
+    authorizedBranchIds?: string[]
   ): Promise<CustomerPaymentDTO> {
+    if (authorizedBranchIds && !authorizedBranchIds.includes(branchId)) {
+      throw HttpError.forbidden('You are not authorized to record payments in this branch.')
+    }
+
     // 1. Idempotency Check
     let requestHash = ''
     if (idempotencyKey) {
@@ -157,12 +163,19 @@ export class CustomerPaymentsService {
     }
     const validatedAllocations: ValidatedAlloc[] = []
 
+    const seenInvoiceIds = new Set<string>()
     if (input.allocations && input.allocations.length > 0) {
       for (let i = 0; i < input.allocations.length; i++) {
         const item = input.allocations[i]
+        if (seenInvoiceIds.has(item.invoiceId)) {
+          throw HttpError.badRequest(`Duplicate allocation to invoice '${item.invoiceId}'.`, {
+            field: `allocations[${i}].invoiceId`,
+          })
+        }
+        seenInvoiceIds.add(item.invoiceId)
         const inv = await this.db
           .prepare(
-            `SELECT id, sale_id, invoice_number, customer_id, total_amount_minor,
+            `SELECT id, branch_id, sale_id, invoice_number, customer_id, total_amount_minor,
                     paid_amount_minor, remaining_amount_minor, payment_status, status
              FROM invoices
              WHERE business_id = ? AND id = ? LIMIT 1`
@@ -174,6 +187,10 @@ export class CustomerPaymentsService {
           throw HttpError.badRequest(`Invoice '${item.invoiceId}' does not exist.`, {
             field: `allocations[${i}].invoiceId`,
           })
+        }
+
+        if (authorizedBranchIds && !authorizedBranchIds.includes(inv.branch_id)) {
+          throw HttpError.forbidden('You are not authorized to allocate payments to invoices in this branch.')
         }
 
         if (inv.customer_id !== customer.id) {
@@ -443,7 +460,8 @@ export class CustomerPaymentsService {
     businessId: string,
     paymentId: string,
     operatorId: string,
-    input: AllocateAdvanceInput
+    input: AllocateAdvanceInput,
+    authorizedBranchIds?: string[]
   ): Promise<CustomerPaymentDTO> {
     const payment = await this.db
       .prepare('SELECT * FROM payments WHERE business_id = ? AND id = ? LIMIT 1')
@@ -462,6 +480,10 @@ export class CustomerPaymentsService {
       throw HttpError.notFound('Payment not found.')
     }
 
+    if (authorizedBranchIds && !authorizedBranchIds.includes(payment.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to allocate payments in this branch.')
+    }
+
     if (payment.unallocated_amount_minor <= 0) {
       throw HttpError.badRequest('This payment has no unallocated advance balance available.')
     }
@@ -473,11 +495,18 @@ export class CustomerPaymentsService {
     }
     const validatedAllocations: ValidatedAdvanceAlloc[] = []
 
+    const seenInvoiceIds = new Set<string>()
     for (let i = 0; i < input.allocations.length; i++) {
       const item = input.allocations[i]
+      if (seenInvoiceIds.has(item.invoiceId)) {
+        throw HttpError.badRequest(`Duplicate allocation to invoice '${item.invoiceId}'.`, {
+          field: `allocations[${i}].invoiceId`,
+        })
+      }
+      seenInvoiceIds.add(item.invoiceId)
       const inv = await this.db
         .prepare(
-          `SELECT id, sale_id, invoice_number, customer_id, total_amount_minor,
+          `SELECT id, branch_id, sale_id, invoice_number, customer_id, total_amount_minor,
                   paid_amount_minor, remaining_amount_minor, payment_status, status
            FROM invoices
            WHERE business_id = ? AND id = ? LIMIT 1`
@@ -489,6 +518,10 @@ export class CustomerPaymentsService {
         throw HttpError.badRequest(`Invoice '${item.invoiceId}' does not exist.`, {
           field: `allocations[${i}].invoiceId`,
         })
+      }
+
+      if (authorizedBranchIds && !authorizedBranchIds.includes(inv.branch_id)) {
+        throw HttpError.forbidden('You are not authorized to allocate payments to invoices in this branch.')
       }
 
       if (inv.customer_id !== payment.customer_id) {

@@ -78,6 +78,7 @@ export function categorizeError(error: unknown): {
   code: string
   message: string
   retryAfterSeconds?: number
+  httpStatus?: number
 } {
   if (error instanceof OutboxError) {
     return {
@@ -96,33 +97,38 @@ export function categorizeError(error: unknown): {
 
     // HTTP 401: Auth Blocked
     if (status === 401 || code === 'AUTHENTICATION_REQUIRED') {
-      return { category: 'blocked_auth', code: 'AUTHENTICATION_REQUIRED', message }
+      return { category: 'blocked_auth', code: 'AUTHENTICATION_REQUIRED', message, httpStatus: status }
     }
 
     // HTTP 409: Conflict
     if (status === 409 || code === 'CONFLICT' || message.includes('VERSION_CONFLICT')) {
-      return { category: 'conflict', code: 'CONFLICT', message }
+      return { category: 'conflict', code: 'CONFLICT', message, httpStatus: status }
     }
 
     // HTTP 403 or Explicit Reconciliation Flag
     if (status === 403 || code === 'RECONCILIATION_REQUIRED' || code === 'DEVICE_REVOKED') {
-      return { category: 'reconciliation_required', code: code || 'FORBIDDEN_RECONCILIATION', message }
+      return { category: 'reconciliation_required', code: code || 'FORBIDDEN_RECONCILIATION', message, httpStatus: status }
     }
 
     // HTTP 400 or 404: Permanent Validation Rejection
     if (status === 400 || status === 404 || code === 'VALIDATION_ERROR') {
-      return { category: 'rejected', code: code || 'VALIDATION_ERROR', message }
+      return {
+        category: 'rejected',
+        code: code !== 'UNKNOWN' ? code : status === 400 ? 'BAD_REQUEST' : 'VALIDATION_ERROR',
+        message,
+        httpStatus: status,
+      }
     }
 
     // HTTP 429: Rate Limited (Retryable)
     if (status === 429) {
       const retryAfter = typeof err.retryAfter === 'number' ? err.retryAfter : undefined
-      return { category: 'retryable', code: 'RATE_LIMITED', message, retryAfterSeconds: retryAfter }
+      return { category: 'retryable', code: 'RATE_LIMITED', message, retryAfterSeconds: retryAfter, httpStatus: status }
     }
 
     // HTTP 408 / 5xx: Retryable
     if (status === 408 || (status && status >= 500 && status <= 599)) {
-      return { category: 'retryable', code: `HTTP_${status}`, message }
+      return { category: 'retryable', code: `HTTP_${status}`, message, httpStatus: status }
     }
 
     // Network / Fetch errors
@@ -135,7 +141,7 @@ export function categorizeError(error: unknown): {
       lowerMsg.includes('abort') ||
       lowerMsg.includes('connection refused')
     ) {
-      return { category: 'retryable', code: 'NETWORK_ERROR', message }
+      return { category: 'retryable', code: 'NETWORK_ERROR', message, httpStatus: status }
     }
   }
 

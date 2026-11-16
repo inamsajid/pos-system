@@ -13,17 +13,18 @@ export interface PermissionGuardProps {
 
 export function PermissionGuard({ permission, roles, children }: PermissionGuardProps) {
   const { activeBusiness } = useAuth()
-  const role = (activeBusiness?.role as UserRole) || 'cashier'
+  const role: UserRole | null = (activeBusiness?.role as UserRole | undefined) ?? null
 
-  let allowed = true
+  let allowed = Boolean(role)
   if (permission && !hasPermission(role, permission)) {
     allowed = false
   }
-  if (roles && !roles.includes(role)) {
+  if (roles && (!role || !roles.includes(role))) {
     allowed = false
   }
 
   if (!allowed) {
+    const roleLabel = role ? role.replace('_', ' ') : 'unassigned'
     return (
       <div
         className="grid min-h-[60vh] place-items-center p-6 text-center"
@@ -36,7 +37,7 @@ export function PermissionGuard({ permission, roles, children }: PermissionGuard
           </div>
           <h2 className="text-xl font-bold text-slate-900">Access Restricted</h2>
           <p className="text-sm text-slate-600">
-            Your current workspace role (<strong className="capitalize">{role.replace('_', ' ')}</strong>) does not have authorization to view this module.
+            Your current workspace role (<strong className="capitalize">{roleLabel}</strong>) does not have authorization to view this module.
           </p>
           <div className="pt-2">
             <Link
@@ -53,4 +54,3 @@ export function PermissionGuard({ permission, roles, children }: PermissionGuard
 
   return <>{children}</>
 }
-

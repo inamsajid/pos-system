@@ -1,12 +1,13 @@
 import type { RequestContext } from '../../router'
 import { jsonResponse } from '../../lib/response'
-import { HttpError } from '../../lib/errors'
 import {
   requireAuth,
   requireBusinessContext,
   requirePermission,
 } from '../../middleware/authMiddleware'
 import { checkRateLimit } from '../../middleware/rateLimiter'
+import { createSession } from '../../auth/sessionService'
+import { HttpError } from '../../lib/errors'
 import { StaffService } from './staff.service'
 import {
   validateInviteStaffInput,
@@ -18,11 +19,7 @@ import {
 export async function handleListStaff(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
-
-  const role = ctx.tenant!.membership.role
-  if (!['owner', 'admin', 'manager'].includes(role)) {
-    throw HttpError.forbidden('You do not have permission to view staff members.')
-  }
+  await requirePermission('staff_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseStaffFilterParams(ctx.url)
@@ -36,11 +33,7 @@ export async function handleListStaff(ctx: RequestContext): Promise<Response> {
 export async function handleGetStaffMember(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
-
-  const role = ctx.tenant!.membership.role
-  if (!['owner', 'admin', 'manager'].includes(role)) {
-    throw HttpError.forbidden('You do not have permission to view staff member details.')
-  }
+  await requirePermission('staff_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const memberId = ctx.params.id
@@ -54,11 +47,7 @@ export async function handleGetStaffMember(ctx: RequestContext): Promise<Respons
 export async function handleGetStaffPermissions(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
-
-  const role = ctx.tenant!.membership.role
-  if (!['owner', 'admin', 'manager'].includes(role)) {
-    throw HttpError.forbidden('You do not have permission to view staff permissions.')
-  }
+  await requirePermission('staff_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const memberId = ctx.params.id
@@ -72,11 +61,7 @@ export async function handleGetStaffPermissions(ctx: RequestContext): Promise<Re
 export async function handleGetStaffBranches(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
-
-  const role = ctx.tenant!.membership.role
-  if (!['owner', 'admin', 'manager'].includes(role)) {
-    throw HttpError.forbidden('You do not have permission to view staff branches.')
-  }
+  await requirePermission('staff_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const memberId = ctx.params.id
@@ -87,14 +72,54 @@ export async function handleGetStaffBranches(ctx: RequestContext): Promise<Respo
   return jsonResponse(branches, 200, ctx.requestId)
 }
 
+export async function handleGetInvitationInfo(ctx: RequestContext): Promise<Response> {
+  await checkRateLimit(ctx, { keyPrefix: 'invite_info', maxRequests: 30, windowSeconds: 60 })
+  const token = ctx.url.searchParams.get('token') || ctx.params.token
+  if (!token) {
+    throw HttpError.badRequest('Invitation token is required.')
+  }
+  const service = new StaffService(ctx.env.DB)
+  const info = await service.getInvitationInfo(token)
+  return jsonResponse(info, 200, ctx.requestId)
+}
+
 export async function handleAcceptInvitation(ctx: RequestContext): Promise<Response> {
   await checkRateLimit(ctx, { keyPrefix: 'invite_accept', maxRequests: 20, windowSeconds: 60 })
-  await requireAuth(ctx)
+
+  const body = (await ctx.req.json().catch(() => ({}))) as Record<string, unknown>
+  const token = typeof body.token === 'string' ? body.token : ctx.params.token
+  if (!token || !token.trim()) {
+    throw HttpError.badRequest('Invitation token is required.')
+  }
+
+  // Check if session exists or if we should register/onboard
+  try {
+    await requireAuth(ctx)
+  } catch (authError) {
+    if (typeof body.password === 'string' && typeof body.name === 'string') {
+      const service = new StaffService(ctx.env.DB)
+      const res = await service.registerAndAcceptInvitation(token, body.name, body.password)
+      const isSecure = ctx.url.protocol === 'https:'
+      const { token: sessionToken, cookie } = await createSession(
+        ctx.env.DB,
+        res.userId,
+        ctx.req.headers.get('CF-Connecting-IP') || ctx.req.headers.get('X-Forwarded-For'),
+        ctx.req.headers.get('User-Agent'),
+        isSecure
+      )
+      return jsonResponse(
+        { ...res, sessionToken },
+        200,
+        ctx.requestId,
+        undefined,
+        { 'Set-Cookie': cookie }
+      )
+    }
+    throw authError
+  }
 
   const userId = ctx.auth!.user.id
   const userEmail = ctx.auth!.user.email
-  const body = (await ctx.req.json().catch(() => ({}))) as Record<string, unknown>
-  const token = typeof body.token === 'string' ? body.token : ctx.params.token
 
   const service = new StaffService(ctx.env.DB)
   const result = await service.acceptInvitation(userId, userEmail, token)

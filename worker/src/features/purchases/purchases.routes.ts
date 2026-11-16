@@ -17,6 +17,7 @@ import {
 export async function handleListPurchases(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('purchase_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parsePurchaseQueryParams(ctx.url)
@@ -43,6 +44,7 @@ export async function handleListPurchases(ctx: RequestContext): Promise<Response
 export async function handleGetPurchase(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('purchase_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const purchaseId = ctx.params.id
@@ -99,16 +101,26 @@ export async function handleUpdatePurchase(ctx: RequestContext): Promise<Respons
   await requireBusinessContext(ctx)
   await requirePermission('purchase_order')(ctx)
 
+  const businessId = ctx.tenant!.business.id
   const purchaseId = ctx.params.id
   const body = await parseJsonBody(ctx.req)
   const input = validateUpdatePurchaseInput(body)
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new PurchasesService(ctx.env.DB)
   const purchase = await service.updatePurchase(
-    ctx.tenant!.business.id,
+    businessId,
     purchaseId,
     ctx.auth!.user.id,
-    input
+    input,
+    authorizedBranchIds
   )
 
   return jsonResponse(purchase, 200, ctx.requestId)
@@ -119,12 +131,23 @@ export async function handleConfirmPurchase(ctx: RequestContext): Promise<Respon
   await requireBusinessContext(ctx)
   await requirePermission('purchase_order')(ctx)
 
+  const businessId = ctx.tenant!.business.id
   const purchaseId = ctx.params.id
+
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new PurchasesService(ctx.env.DB)
   const purchase = await service.confirmPurchase(
-    ctx.tenant!.business.id,
+    businessId,
     purchaseId,
-    ctx.auth!.user.id
+    ctx.auth!.user.id,
+    authorizedBranchIds
   )
 
   return jsonResponse(purchase, 200, ctx.requestId)
@@ -135,6 +158,7 @@ export async function handleCancelPurchase(ctx: RequestContext): Promise<Respons
   await requireBusinessContext(ctx)
   await requirePermission('purchase_order')(ctx)
 
+  const businessId = ctx.tenant!.business.id
   const purchaseId = ctx.params.id
   let reason: string | undefined
   try {
@@ -146,12 +170,21 @@ export async function handleCancelPurchase(ctx: RequestContext): Promise<Respons
     // optional body
   }
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new PurchasesService(ctx.env.DB)
   const purchase = await service.cancelPurchase(
-    ctx.tenant!.business.id,
+    businessId,
     purchaseId,
     ctx.auth!.user.id,
-    reason
+    reason,
+    authorizedBranchIds
   )
 
   return jsonResponse(purchase, 200, ctx.requestId)

@@ -1,14 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../../auth/context/useAuth'
+import { queryKeys } from '../../../api/queryKeys'
 import { staffService } from '../services/staffService'
 import type { StaffFilters } from '../types/staff.types'
 
 export function useStaff(filters: StaffFilters = {}) {
-  const { activeBusiness } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   const query = useQuery({
-    queryKey: ['staff', businessId, filters],
+    queryKey: queryKeys.staff.list(filters as Record<string, unknown>, scope),
     queryFn: () => staffService.getStaff(filters),
     staleTime: 30_000,
   })
@@ -23,25 +28,32 @@ export function useStaff(filters: StaffFilters = {}) {
 }
 
 export function useStaffMember(id: string | undefined) {
-  const { activeBusiness } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   return useQuery({
-    queryKey: ['staffMember', businessId, id],
-    queryFn: () => (id ? staffService.getStaffMember(id) : Promise.reject('No ID')),
+    queryKey: queryKeys.staff.detail(id || 'none', scope),
+    queryFn: () => (id ? staffService.getStaffMember(id) : Promise.reject(new Error('No ID'))),
     enabled: Boolean(id),
     staleTime: 30_000,
   })
 }
 
 export function useStaffInvitations() {
-  const { activeBusiness } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   return useQuery({
-    queryKey: ['staffInvitations', businessId],
+    queryKey: queryKeys.staff.invitations(scope),
     queryFn: () => staffService.getInvitations(),
     staleTime: 30_000,
   })
 }
-

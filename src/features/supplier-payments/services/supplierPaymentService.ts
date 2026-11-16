@@ -57,6 +57,13 @@ interface WorkerSupplierPaymentDTO {
   unallocatedAmountMinor: number
   method: string
   reference: string | null
+  paymentMethods?: Array<{
+    id?: string
+    paymentId?: string
+    method: string
+    amountMinor: number
+    reference?: string | null
+  }>
   notes: string | null
   paidBy: string
   paidByName?: string
@@ -83,14 +90,21 @@ function mapWorkerPaymentToSupplierPayment(dto: WorkerSupplierPaymentDTO): Suppl
       companyName: dto.supplierSnapshot?.companyName ?? undefined,
     },
     amount: dto.amountMinor / 100,
-    methodBreakdown: [
-      {
-        id: `${dto.id}-m1`,
-        method: (dto.method === 'bank_transfer' ? 'bank-transfer' : dto.method) as any,
-        amount: dto.amountMinor / 100,
-        reference: dto.reference ?? undefined,
-      },
-    ],
+    methodBreakdown: (dto.paymentMethods && dto.paymentMethods.length > 0)
+      ? dto.paymentMethods.map((m, idx) => ({
+          id: `${dto.id}-m${idx + 1}`,
+          method: (m.method === 'bank_transfer' ? 'bank-transfer' : m.method) as any,
+          amount: m.amountMinor / 100,
+          reference: m.reference ?? undefined,
+        }))
+      : [
+          {
+            id: `${dto.id}-m1`,
+            method: (dto.method === 'bank_transfer' ? 'bank-transfer' : dto.method) as any,
+            amount: dto.amountMinor / 100,
+            reference: dto.reference ?? undefined,
+          },
+        ],
     allocations: (dto.allocations || []).map((a) => ({
       purchaseId: a.purchaseId,
       purchaseNumber: a.purchaseNumber,
@@ -132,6 +146,33 @@ export function getPaymentsForPurchase(purchaseId: string) {
   return getSupplierPayments().filter((payment) =>
     payment.allocations.some((allocation) => allocation.purchaseId === purchaseId)
   )
+}
+
+export async function fetchSupplierOutstandingPurchases(supplierId?: string): Promise<OutstandingPurchase[]> {
+  if (!isExplicitDemo()) {
+    try {
+      const params = new URLSearchParams({ limit: '100' })
+      if (supplierId) params.set('supplierId', supplierId)
+      const res = await apiClient.get<{ items: any[] } | any[]>(`/purchases?${params.toString()}`)
+      const list = Array.isArray(res) ? res : res.items || []
+      return list
+        .filter((p: any) => !['draft', 'cancelled'].includes(p.status) && (p.totalAmountMinor > (p.paidAmountMinor || 0)))
+        .map((p: any) => ({
+          purchaseId: p.id,
+          purchaseNumber: p.purchaseNumber,
+          supplierInvoiceNumber: p.supplierInvoiceNumber || undefined,
+          date: p.purchaseDate || p.purchaseDateKey || p.createdAt,
+          supplierId: p.supplierId,
+          supplierName: p.supplierSnapshot?.name || p.supplierName || 'Supplier',
+          totalAmount: p.totalAmountMinor / 100,
+          amountPaid: (p.paidAmountMinor || 0) / 100,
+          outstanding: (p.totalAmountMinor - (p.paidAmountMinor || 0)) / 100,
+        }))
+    } catch {
+      return getSupplierOutstandingPurchases(supplierId)
+    }
+  }
+  return getSupplierOutstandingPurchases(supplierId)
 }
 
 export function getSupplierOutstandingPurchases(supplierId?: string): OutstandingPurchase[] {
@@ -178,6 +219,15 @@ export async function createSupplierPayment(draft: SupplierPaymentDraft) {
       amountMinor: Math.round(draft.amount * 100),
       method: method as any,
       reference: draft.methodBreakdown[0]?.reference || null,
+      paymentMethods: draft.methodBreakdown.map((m) => {
+        const raw = m.method as string
+        const norm = raw === 'bank-transfer' || raw === 'bank_transfer' ? 'bank_transfer' : raw
+        return {
+          method: norm as any,
+          amountMinor: Math.round(m.amount * 100),
+          reference: m.reference?.trim() || null,
+        }
+      }),
       notes: draft.notes?.trim() || null,
       allocations: draft.allocations.map((a) => ({
         purchaseId: a.purchaseId,
@@ -244,7 +294,7 @@ export async function createSupplierPayment(draft: SupplierPaymentDraft) {
     allocations: draft.allocations.map((allocation) => ({ ...allocation, amount: money(allocation.amount) })),
     unallocatedAmount,
     paidAt: draft.paidAt,
-    paidBy: 'Ayesha Khan',
+    paidBy: 'Staff Member',
     notes: draft.notes?.trim() || undefined,
     createdAt: now,
   }

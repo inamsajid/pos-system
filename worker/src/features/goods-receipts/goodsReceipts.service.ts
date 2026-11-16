@@ -34,6 +34,8 @@ interface PurchaseItemRecord {
   ordered_quantity: number
   received_quantity: number
   unit_cost_minor: number
+  discount_minor?: number
+  line_total_minor?: number
 }
 
 interface ProductCostRecord {
@@ -91,7 +93,8 @@ export class GoodsReceiptsService {
     purchaseId: string,
     userId: string,
     input: CreateGoodsReceiptInput,
-    idempotencyKey?: string | null
+    idempotencyKey?: string | null,
+    authorizedBranchIds?: string[]
   ): Promise<GoodsReceiptDTO> {
     // 1. Idempotency Check
     let requestHash = ''
@@ -119,9 +122,13 @@ export class GoodsReceiptsService {
       throw HttpError.notFound('Purchase order not found.')
     }
 
-    if (!['draft', 'ordered', 'partially_received'].includes(purchase.status)) {
+    if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to receive goods in this branch.')
+    }
+
+    if (!['ordered', 'partially_received'].includes(purchase.status)) {
       throw HttpError.badRequest(
-        `Cannot receive goods against purchase in status '${purchase.status}'.`
+        `Cannot receive goods against purchase in status '${purchase.status}'. Orders must be confirmed before receiving.`
       )
     }
 
@@ -179,6 +186,7 @@ export class GoodsReceiptsService {
 
     // 5. Generate Receipt Numbers & IDs
     const businessDateKey = getCurrentBusinessDateKey()
+    const nowIso = new Date().toISOString()
     const receiptId = `gr_${crypto.randomUUID()}`
     const receiptNumber = `REC-${businessDateKey.replace(/-/g, '')}-${crypto.randomUUID().substring(0, 6).toUpperCase()}`
 
@@ -230,124 +238,126 @@ export class GoodsReceiptsService {
           )
       )
 
-      // Update purchase_item received quantity
+      // Update purchase_item received quantity (scoped via purchase_id)
       statements.push(
         this.db
           .prepare(
             `UPDATE purchase_items
              SET received_quantity = received_quantity + ?
-             WHERE id = ?`
+             WHERE id = ? AND purchase_id = ?`
           )
-          .bind(vLine.quantityReceived, vLine.item.id)
+          .bind(vLine.quantityReceived, vLine.item.id, purchase.id)
       )
 
-      // MWA Cost Calculation & Inventory Balance Update
-      const bal = await this.db
-        .prepare(
-          'SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ? LIMIT 1'
-        )
-        .bind(businessId, purchase.branch_id, vLine.item.product_id)
-        .first<{ quantity_on_hand: number }>()
-
-      const currentQoh = bal?.quantity_on_hand ?? 0.0
-      const newQoh = currentQoh + vLine.quantityReceived
+      // MWA Cost Calculation & Branch-Specific Inventory Balance Update
+      const effectiveUnitCost = vLine.item.ordered_quantity > 0 && vLine.item.line_total_minor !== undefined
+        ? Math.max(0, Math.round(vLine.item.line_total_minor / vLine.item.ordered_quantity))
+        : vLine.unitCostMinor
 
       const prodCost = await this.db
-        .prepare('SELECT purchase_price_minor FROM products WHERE id = ?')
-        .bind(vLine.item.product_id)
-        .first<ProductCostRecord>()
+        .prepare('SELECT purchase_price_minor, track_inventory FROM products WHERE business_id = ? AND id = ? LIMIT 1')
+        .bind(businessId, vLine.item.product_id)
+        .first<ProductCostRecord & { track_inventory: number }>()
 
-      const currentCost = prodCost?.purchase_price_minor ?? 0
-      let updatedMwaCost: number
+      if (prodCost?.track_inventory !== 0) {
+        // Ensure inventory_balances row exists initialized to 0.0 with baseline cost
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT OR IGNORE INTO inventory_balances (
+                id, business_id, branch_id, product_id, quantity_on_hand, average_cost_minor, updated_at
+              ) VALUES (?, ?, ?, ?, 0.0, ?, datetime('now'))`
+            )
+            .bind(`inv_${crypto.randomUUID()}`, businessId, purchase.branch_id, vLine.item.product_id, effectiveUnitCost)
+        )
 
-      if (currentQoh <= 0) {
-        updatedMwaCost = vLine.unitCostMinor
-      } else {
-        const totalCostSum = currentQoh * currentCost + vLine.quantityReceived * vLine.unitCostMinor
-        const totalQtySum = currentQoh + vLine.quantityReceived
-        updatedMwaCost = Math.round(totalCostSum / totalQtySum)
-      }
-
-      // Update product baseline purchase cost with new MWA cost
-      statements.push(
-        this.db
+        const bal = await this.db
           .prepare(
-            `UPDATE products
-             SET purchase_price_minor = ?, updated_at = datetime('now')
-             WHERE id = ?`
+            'SELECT quantity_on_hand, average_cost_minor FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ? LIMIT 1'
           )
-          .bind(updatedMwaCost, vLine.item.product_id)
-      )
+          .bind(businessId, purchase.branch_id, vLine.item.product_id)
+          .first<{ quantity_on_hand: number; average_cost_minor: number | null }>()
 
-      // Stock Movement entry
-      const movId = `mov_${crypto.randomUUID()}`
-      const movementNumber = `MOV-${businessDateKey.replace(/-/g, '')}-${crypto.randomUUID().substring(0, 6).toUpperCase()}`
+        const currentQoh = bal?.quantity_on_hand ?? 0.0
+        const currentCost = (bal?.average_cost_minor && bal.average_cost_minor > 0)
+          ? bal.average_cost_minor
+          : (prodCost?.purchase_price_minor ?? 0)
 
-      statements.push(
-        this.db
-          .prepare(
-            `INSERT INTO stock_movements (
-              id, business_id, branch_id, movement_number, product_id, type,
-              quantity_change, previous_quantity, new_quantity, unit_cost_minor,
-              reference_type, reference_id, reference_number, notes,
-              business_date_key, created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'purchase_receipt', ?, ?, ?, ?, 'purchase', ?, ?, 'Goods Receipt Confirmed', ?, ?, datetime('now'))`
-          )
-          .bind(
-            movId,
+        let updatedMwaCost: number
+        if (currentQoh <= 0) {
+          updatedMwaCost = effectiveUnitCost
+        } else {
+          const totalCostSum = currentQoh * currentCost + vLine.quantityReceived * effectiveUnitCost
+          const totalQtySum = currentQoh + vLine.quantityReceived
+          updatedMwaCost = Math.round(totalCostSum / totalQtySum)
+        }
+
+        // Stock Movement entry reading live in-tx balance
+        const movId = `mov_${crypto.randomUUID()}`
+        const movementNumber = `MOV-${businessDateKey.replace(/-/g, '')}-${crypto.randomUUID().substring(0, 6).toUpperCase()}`
+
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT INTO stock_movements (
+                id, business_id, branch_id, movement_number, product_id, type,
+                quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+                reference_type, reference_id, reference_number, notes,
+                business_date_key, created_by, created_at
+              ) VALUES (
+                ?, ?, ?, ?, ?, 'purchase_receipt',
+                ?,
+                COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+                COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?,
+                ?, 'purchase', ?, ?, 'Goods Receipt Confirmed', ?, ?, datetime('now')
+              )`
+            )
+            .bind(
+              movId,
+              businessId,
+              purchase.branch_id,
+              movementNumber,
+              vLine.item.product_id,
+              vLine.quantityReceived,
+              businessId,
+              purchase.branch_id,
+              vLine.item.product_id,
+              businessId,
+              purchase.branch_id,
+              vLine.item.product_id,
+              vLine.quantityReceived,
+              effectiveUnitCost,
+              purchase.id,
+              receiptNumber,
+              businessDateKey,
+              userId
+            )
+        )
+
+        // Atomic Inventory Balance increment and branch-specific MWA cost update
+        statements.push(
+          this.db
+            .prepare(
+              `UPDATE inventory_balances
+               SET quantity_on_hand = quantity_on_hand + ?, average_cost_minor = ?, updated_at = datetime('now')
+               WHERE business_id = ? AND branch_id = ? AND product_id = ?`
+            )
+            .bind(vLine.quantityReceived, updatedMwaCost, businessId, purchase.branch_id, vLine.item.product_id)
+        )
+
+        statements.push(
+          this.changeLogRepo.createLiveStockChangeEventStatement({
             businessId,
-            purchase.branch_id,
-            movementNumber,
-            vLine.item.product_id,
-            vLine.quantityReceived,
-            currentQoh,
-            newQoh,
-            vLine.unitCostMinor,
-            purchase.id,
-            receiptNumber,
-            businessDateKey,
-            userId
-          )
-      )
-
-      // Inventory Balance Upsert
-      statements.push(
-        this.db
-          .prepare(
-            `INSERT INTO inventory_balances (
-              id, business_id, branch_id, product_id, quantity_on_hand, updated_at
-            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(branch_id, product_id) DO UPDATE SET
-              quantity_on_hand = quantity_on_hand + excluded.quantity_on_hand,
-              updated_at = datetime('now')`
-          )
-          .bind(
-            `inv_${crypto.randomUUID()}`,
-            businessId,
-            purchase.branch_id,
-            vLine.item.product_id,
-            vLine.quantityReceived
-          )
-      )
-
-      statements.push(
-        this.changeLogRepo.createChangeEventStatement({
-          businessId,
-          branchId: purchase.branch_id,
-          resourceType: 'stock',
-          resourceId: `${purchase.branch_id}:${vLine.item.product_id}`,
-          resourceVersion: 0,
-          operation: 'upsert',
-          payload: {
-            productId: vLine.item.product_id,
             branchId: purchase.branch_id,
-            quantityOnHand: newQoh,
+            productId: vLine.item.product_id,
+            resourceId: `${purchase.branch_id}:${vLine.item.product_id}`,
+            resourceVersion: 0,
             unit: vLine.item.unit,
-            updatedAt: new Date().toISOString(),
-          },
-          eventId: `${businessId}:stock:${purchase.branch_id}:${vLine.item.product_id}:${movId}`,
-        })
-      )
+            updatedAt: nowIso,
+            eventId: `${businessId}:stock:${purchase.branch_id}:${vLine.item.product_id}:${movId}`,
+          })
+        )
+      }
 
       receiptItemsDTO.push({
         id: griId,
@@ -381,9 +391,9 @@ export class GoodsReceiptsService {
         .prepare(
           `UPDATE purchases
            SET status = ?, updated_at = datetime('now')
-           WHERE id = ?`
+           WHERE business_id = ? AND id = ?`
         )
-        .bind(newPurchaseStatus, purchase.id)
+        .bind(newPurchaseStatus, businessId, purchase.id)
     )
 
     // 9. Post Supplier Ledger Transaction (Purchase Bill Liability)

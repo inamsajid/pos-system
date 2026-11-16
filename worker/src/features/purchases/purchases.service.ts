@@ -344,7 +344,8 @@ export class PurchasesService {
     businessId: string,
     purchaseId: string,
     userId: string,
-    input: UpdatePurchaseInput
+    input: UpdatePurchaseInput,
+    authorizedBranchIds?: string[]
   ): Promise<PurchaseDTO> {
     const purchase = await this.db
       .prepare('SELECT * FROM purchases WHERE business_id = ? AND id = ? LIMIT 1')
@@ -353,6 +354,10 @@ export class PurchasesService {
 
     if (!purchase) {
       throw HttpError.notFound('Purchase order not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to update purchase orders in this branch.')
     }
 
     if (purchase.status !== 'draft') {
@@ -488,7 +493,12 @@ export class PurchasesService {
     return (await this.repo.getPurchaseById(businessId, purchaseId, [purchase.branch_id]))!
   }
 
-  async confirmPurchase(businessId: string, purchaseId: string, userId: string): Promise<PurchaseDTO> {
+  async confirmPurchase(
+    businessId: string,
+    purchaseId: string,
+    userId: string,
+    authorizedBranchIds?: string[]
+  ): Promise<PurchaseDTO> {
     const purchase = await this.db
       .prepare('SELECT * FROM purchases WHERE business_id = ? AND id = ? LIMIT 1')
       .bind(businessId, purchaseId)
@@ -496,6 +506,10 @@ export class PurchasesService {
 
     if (!purchase) {
       throw HttpError.notFound('Purchase order not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to confirm purchase orders in this branch.')
     }
 
     if (purchase.status !== 'draft') {
@@ -539,7 +553,8 @@ export class PurchasesService {
     businessId: string,
     purchaseId: string,
     userId: string,
-    reason?: string
+    reason?: string,
+    authorizedBranchIds?: string[]
   ): Promise<PurchaseDTO> {
     const purchase = await this.db
       .prepare('SELECT * FROM purchases WHERE business_id = ? AND id = ? LIMIT 1')
@@ -548,6 +563,10 @@ export class PurchasesService {
 
     if (!purchase) {
       throw HttpError.notFound('Purchase order not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to cancel purchase orders in this branch.')
     }
 
     if (purchase.status === 'cancelled') {

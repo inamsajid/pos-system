@@ -437,4 +437,52 @@ describe('Step 14.3 — Staff Management API (/api/v1/staff)', () => {
     expect(memberRow.role).toBe('cashier')
     expect(memberRow.is_active).toBe(1)
   })
+
+  it('allows new unauthenticated user to register and accept invitation directly (FE-006)', async () => {
+    // 1. Create invitation
+    const email = 'brand.new.onboarding@team.com'
+    const invRes = await worker.fetch(new Request('https://api.pos.local/api/v1/staff/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}`, 'X-Business-Id': businessId },
+      body: JSON.stringify({ email, role: 'accountant' }),
+    }), env, executionCtx)
+
+    const invJson = (await invRes.json()) as any
+    const token = invJson.data.invitationToken
+
+    // 2. Fetch invitation info publicly
+    const infoRes = await worker.fetch(new Request(`https://api.pos.local/api/v1/staff/invitations/info?token=${token}`), env, executionCtx)
+    expect(infoRes.status).toBe(200)
+    const infoJson = (await infoRes.json()) as any
+    expect(infoJson.data.email).toBe(email)
+    expect(infoJson.data.role).toBe('accountant')
+    expect(infoJson.data.businessName).toBe('Team Retail Solutions')
+
+    // 3. Register and accept without pre-existing session
+    const regRes = await worker.fetch(new Request('https://api.pos.local/api/v1/staff/invitations/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token,
+        name: 'Brand New Staff',
+        password: 'Password123!',
+      }),
+    }), env, executionCtx)
+
+    expect(regRes.status).toBe(200)
+    const regJson = (await regRes.json()) as any
+    expect(regJson.data.businessId).toBe(businessId)
+    expect(regJson.data.role).toBe('accountant')
+    expect(regRes.headers.get('Set-Cookie')).toContain('__session=')
+
+    // 4. Verify user was created in users and joined in business_members
+    const userRow = sqlite.prepare(`SELECT * FROM users WHERE email = ?`).get(email) as any
+    expect(userRow).toBeDefined()
+    expect(userRow.name).toBe('Brand New Staff')
+
+    const memberRow = sqlite.prepare(`SELECT * FROM business_members WHERE business_id = ? AND user_id = ?`).get(businessId, userRow.id) as any
+    expect(memberRow).toBeDefined()
+    expect(memberRow.role).toBe('accountant')
+    expect(memberRow.is_active).toBe(1)
+  })
 })

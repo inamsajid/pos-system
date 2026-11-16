@@ -38,7 +38,7 @@ export interface AuthContextValue {
   signIn: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   refreshSession: () => Promise<void>
-  setActiveBusiness: (business: BusinessMembershipInfo) => void
-  setActiveBranch: (branch: BranchInfo) => void
+  setActiveBusiness: (business: BusinessMembershipInfo | null) => void
+  setActiveBranch: (branch: BranchInfo | null) => void
 }
 

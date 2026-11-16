@@ -303,6 +303,37 @@ export const productService: ProductService = {
   },
 
   async adjustProductStock(productId, adjustment) {
+    if (!isExplicitDemo()) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Offline mode: Stock adjustments require an active server connection.')
+      }
+      const existing = await this.getProductById(productId)
+      if (!existing) throw new Error('Product not found.')
+      if (existing.status === 'archived') throw new Error('Archived products cannot receive normal stock adjustments.')
+      if (!existing.trackInventory) throw new Error('Inventory tracking is disabled for this product.')
+      if (!Number.isFinite(adjustment.quantity) || adjustment.quantity < 0 || (adjustment.type !== 'set' && adjustment.quantity === 0)) throw new Error('Enter a valid stock adjustment quantity.')
+      if (!adjustment.reason.trim()) throw new Error('A stock adjustment reason is required.')
+
+      const previous = existing.stockQuantity ?? 0
+      const next = adjustment.type === 'add' ? previous + adjustment.quantity : adjustment.type === 'remove' ? previous - adjustment.quantity : adjustment.quantity
+      if (next < 0) throw new Error('Stock quantity cannot be negative.')
+      const change = next - previous
+      if (change === 0) return cloneProduct(existing)
+
+      const type = change > 0 ? 'adjustment_in' : 'adjustment_out'
+      const payload = {
+        productId,
+        quantityChange: Math.abs(change),
+        type,
+        reason: adjustment.reason,
+        notes: adjustment.notes || null,
+      }
+      await apiClient.post('/inventory/adjustments', payload)
+      syncCatalog().catch(() => {})
+      const updated = await this.getProductById(productId)
+      return updated ?? existing
+    }
+
     const existing = findProduct(productId)
     if (existing.status === 'archived') throw new Error('Archived products cannot receive normal stock adjustments.')
     if (!existing.trackInventory) throw new Error('Inventory tracking is disabled for this product.')

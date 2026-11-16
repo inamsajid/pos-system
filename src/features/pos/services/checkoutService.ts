@@ -1,9 +1,10 @@
 import { customerService } from '../../customers/services/customerService'
 import { productService } from '../../products/services/productService'
 import { apiClient } from '../../../lib/api-client'
+import { toMinorUnits } from '../../../domain/money/moneyUtils'
 import type { ProductUnit } from '../../products/types/product.types'
 import type { CheckoutSale, CheckoutMethod, SalePayment, SaleItemSnapshot } from '../types/checkout.types'
-import { discountAmount, money, orderTotal } from '../utils/checkoutCalculations'
+import { discountAmount, money, orderTotal, subtotal, taxAmount } from '../utils/checkoutCalculations'
 
 const SALES_STORAGE_KEY = 'northstar.completed-sales.v1'
 
@@ -22,6 +23,18 @@ function loadSales(): CheckoutSale[] {
 }
 
 let sales: CheckoutSale[] = loadSales()
+
+export function resetCheckoutSessionCache(): void {
+  sales = []
+  checkoutInProgress = false
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(SALES_STORAGE_KEY)
+    }
+  } catch {
+    /* Ignore cleanup errors if browser storage is unavailable. */
+  }
+}
 
 function persistSales() {
   try {
@@ -64,15 +77,31 @@ export async function validateCheckout(
   customerId: string,
   discountType: 'fixed' | 'percent',
   discountValue: number,
-  payments: SalePayment[]
+  payments: SalePayment[],
+  taxOptions?: { taxRatePercent?: number; taxInclusive?: boolean }
 ) {
   const productIds = Object.keys(quantities).filter((id) => quantities[id] > 0)
   if (!productIds.length) throw new Error('Add at least one item to the cart.')
 
-  const [all, customer] = await Promise.all([
+  const [all, fetchedCustomer] = await Promise.all([
     productService.getProducts(),
     customerService.getCustomerById(customerId),
   ])
+
+  const customer =
+    fetchedCustomer ??
+    (customerId === 'walk-in'
+      ? {
+          id: 'walk-in',
+          customerCode: 'WALK-IN',
+          name: 'Walk-in Customer',
+          type: 'individual' as const,
+          status: 'active' as const,
+          isWalkIn: true,
+          createdAt: '',
+          updatedAt: '',
+        }
+      : undefined)
 
   if (!customer || (!customer.isWalkIn && customer.status !== 'active')) {
     throw new Error('Select an active customer.')
@@ -93,9 +122,14 @@ export async function validateCheckout(
     return p
   })
 
-  const sub = money(products.reduce((sum, p) => sum + p.sellingPrice * quantities[p.id], 0))
+  const sub = subtotal(products, quantities)
   const discount = discountAmount(sub, discountType, discountValue)
-  const total = orderTotal(sub, discount)
+  const tax = taxAmount(
+    money(Math.max(0, sub - discount)),
+    taxOptions?.taxRatePercent ?? 0,
+    taxOptions?.taxInclusive ?? false
+  )
+  const total = orderTotal(sub, discount, tax, taxOptions?.taxInclusive ?? false)
 
   if (payments.some((p) => !Number.isFinite(p.amount) || p.amount < 0)) {
     throw new Error('Payment amounts must be zero or more.')
@@ -127,6 +161,7 @@ export async function validateCheckout(
     customer,
     subtotal: sub,
     discount,
+    tax,
     total,
     paid: money(nonCash + cashApplied),
     remaining,
@@ -156,6 +191,7 @@ interface WorkerSaleDTO {
   discountType: 'fixed' | 'percent'
   discountValue: number
   discountMinor: number
+  taxMinor?: number
   totalAmountMinor: number
   amountPaidMinor: number
   remainingBalanceMinor: number
@@ -178,7 +214,11 @@ interface WorkerSaleDTO {
   }>
 }
 
-function mapSaleDtoToCheckoutSale(dto: WorkerSaleDTO, fallbackCustomer: { name: string; customerCode?: string; phone?: string; address?: string }): CheckoutSale {
+function mapSaleDtoToCheckoutSale(
+  dto: WorkerSaleDTO,
+  fallbackCustomer: { name: string; customerCode?: string; phone?: string; address?: string },
+  businessName?: string
+): CheckoutSale {
   const items: SaleItemSnapshot[] = (dto.items || []).map((item) => ({
     productId: item.productId,
     productName: item.productName,
@@ -204,19 +244,23 @@ function mapSaleDtoToCheckoutSale(dto: WorkerSaleDTO, fallbackCustomer: { name: 
     customerName: dto.customerSnapshot?.name || fallbackCustomer.name || 'Walk-in Customer',
     customerCode: dto.customerSnapshot?.customerCode || fallbackCustomer.customerCode,
     customerPhone: dto.customerSnapshot?.phone ?? fallbackCustomer.phone ?? undefined,
-    customerAddress: [dto.customerSnapshot?.address, dto.customerSnapshot?.city].filter(Boolean).join(', ') || fallbackCustomer.address || undefined,
+    customerAddress:
+      [dto.customerSnapshot?.address, dto.customerSnapshot?.city].filter(Boolean).join(', ') ||
+      fallbackCustomer.address ||
+      undefined,
     cashierName: dto.cashierName || 'Cashier',
     businessSnapshot: {
-      name: 'Northstar Market',
-      address: 'Business address · Lahore',
-      phone: 'Business phone',
-      email: 'Business email',
+      name: businessName || 'Store Workspace',
+      address: '',
+      phone: '',
+      email: '',
     },
     items,
     subtotal: dto.subtotalMinor / 100,
     discountType: dto.discountType,
     discountValue: dto.discountValue,
     discountAmount: dto.discountMinor / 100,
+    taxAmount: (dto.taxMinor ?? 0) / 100,
     totalAmount: dto.totalAmountMinor / 100,
     payments,
     amountPaid: dto.amountPaidMinor / 100,
@@ -224,6 +268,7 @@ function mapSaleDtoToCheckoutSale(dto: WorkerSaleDTO, fallbackCustomer: { name: 
     changeReturned: dto.changeReturnedMinor / 100,
     createdAt: dto.createdAt,
     status: 'completed',
+    isProvisional: false,
   }
 }
 
@@ -234,7 +279,13 @@ export async function completeCheckout(
   customerId: string,
   discountType: 'fixed' | 'percent',
   discountValue: number,
-  payments: SalePayment[]
+  payments: SalePayment[],
+  taxOptions?: {
+    taxRatePercent?: number
+    taxInclusive?: boolean
+    cashierName?: string
+    businessName?: string
+  }
 ): Promise<CheckoutSale> {
   if (checkoutInProgress) {
     throw new Error('A checkout is already being completed.')
@@ -242,7 +293,14 @@ export async function completeCheckout(
   checkoutInProgress = true
 
   try {
-    const valid = await validateCheckout(quantities, customerId, discountType, discountValue, payments)
+    const valid = await validateCheckout(
+      quantities,
+      customerId,
+      discountType,
+      discountValue,
+      payments,
+      taxOptions
+    )
 
     if (!isExplicitDemo()) {
       const idempotencyKey =
@@ -255,13 +313,14 @@ export async function completeCheckout(
         items: valid.products.map((p) => ({
           productId: p.id,
           quantity: quantities[p.id],
-          unitPriceMinor: Math.round(p.sellingPrice * 100),
+          unitPriceMinor: toMinorUnits(p.sellingPrice),
         })),
         discountType,
         discountValue,
+        discountMinor: discountType === 'fixed' ? toMinorUnits(discountValue) : undefined,
         payments: payments.map((p) => ({
           method: p.method === 'bank-transfer' ? 'bank_transfer' : p.method,
-          amountMinor: Math.round(p.amount * 100),
+          amountMinor: toMinorUnits(p.amount),
           reference: p.reference ?? undefined,
         })),
       }
@@ -272,13 +331,17 @@ export async function completeCheckout(
         },
       })
 
-      const completedSale = mapSaleDtoToCheckoutSale(createdDto, valid.customer)
+      const completedSale = mapSaleDtoToCheckoutSale(
+        createdDto,
+        valid.customer,
+        taxOptions?.businessName
+      )
       sales = [completedSale, ...sales.filter((s) => s.id !== completedSale.id)]
       persistSales()
       return completedSale
     }
 
-    // Demo / mock execution
+    // Explicit demo / mock execution
     const timestamp = Date.now()
     const id = globalThis.crypto?.randomUUID?.() ?? `sale-${timestamp}`
     const suffix = id.replace(/[^a-z0-9]/gi, '').slice(-6).toUpperCase()
@@ -310,18 +373,19 @@ export async function completeCheckout(
       customerCode: valid.customer.customerCode,
       customerPhone: valid.customer.phone,
       customerAddress: [valid.customer.address, valid.customer.city].filter(Boolean).join(', ') || undefined,
-      cashierName: 'Ayesha Khan',
+      cashierName: taxOptions?.cashierName || 'Demo Cashier',
       businessSnapshot: {
-        name: 'Northstar Market',
-        address: 'Business address · Lahore',
-        phone: 'Business phone',
-        email: 'Business email',
+        name: taxOptions?.businessName || 'Northstar Market',
+        address: 'Demo Store · Lahore',
+        phone: '',
+        email: '',
       },
       items,
       subtotal: valid.subtotal,
       discountType,
       discountValue,
       discountAmount: valid.discount,
+      taxAmount: valid.tax,
       totalAmount: valid.total,
       payments: payments.map((p) => ({ ...p })),
       amountPaid: valid.paid,
@@ -329,6 +393,7 @@ export async function completeCheckout(
       changeReturned: valid.change,
       createdAt: new Date(timestamp).toISOString(),
       status: 'completed',
+      isProvisional: false,
     }
 
     sales = [sale, ...sales]
@@ -352,85 +417,114 @@ export async function completeOfflineCheckout(params: {
   branchId: string
   deviceId: string
   authorizationId: string
+  cashierName?: string
+  businessName?: string
 }): Promise<CheckoutSale> {
-  const { quantities, cashTendered, userId, businessId, branchId, deviceId, authorizationId } = params
-
-  const { offlineSalesService } = await import('../../../lib/offline/sales/offlineSales.service')
-  const { offlineSalesRepository } = await import('../../../lib/offline/sales/offlineSales.repository')
-
-  const allocs = await offlineSalesRepository.getAllocationsForAuth(authorizationId)
-  const allocMap = new Map<string, (typeof allocs)[0]>()
-  for (const a of allocs) {
-    allocMap.set(a.productId, a)
+  if (checkoutInProgress) {
+    throw new Error('A checkout is already being completed.')
   }
+  checkoutInProgress = true
 
-  const items = Object.keys(quantities)
-    .filter((id) => quantities[id] > 0)
-    .map((productId) => {
-      const alloc = allocMap.get(productId)
-      if (!alloc) {
-        throw new Error(`Product '${productId}' is not in the active offline allocation.`)
-      }
-      const qty = quantities[productId]
-      const subtotalMinor = Math.round(qty * alloc.sellingPriceMinor)
-      return {
-        productId,
-        name: alloc.name,
-        sku: alloc.sku,
-        unit: alloc.unit,
-        quantity: qty,
-        unitPriceMinor: alloc.sellingPriceMinor,
-        subtotalMinor,
-        lineTotalMinor: subtotalMinor,
-        allocationId: alloc.id,
-      }
+  try {
+    const {
+      quantities,
+      cashTendered,
+      userId,
+      businessId,
+      branchId,
+      deviceId,
+      authorizationId,
+      cashierName,
+      businessName,
+    } = params
+
+    const { offlineSalesService } = await import('../../../lib/offline/sales/offlineSales.service')
+    const { offlineSalesRepository } = await import('../../../lib/offline/sales/offlineSales.repository')
+
+    const allocs = await offlineSalesRepository.getAllocationsForAuth(authorizationId)
+    const allocMap = new Map<string, (typeof allocs)[0]>()
+    for (const a of allocs) {
+      allocMap.set(a.productId, a)
+    }
+
+    const items = Object.keys(quantities)
+      .filter((id) => quantities[id] > 0)
+      .map((productId) => {
+        const alloc = allocMap.get(productId)
+        if (!alloc) {
+          throw new Error(`Product '${productId}' is not in the active offline allocation.`)
+        }
+        const qty = quantities[productId]
+        const subtotalMinor = Math.round(qty * alloc.sellingPriceMinor)
+        return {
+          productId,
+          name: alloc.name,
+          sku: alloc.sku,
+          unit: alloc.unit,
+          quantity: qty,
+          unitPriceMinor: alloc.sellingPriceMinor,
+          subtotalMinor,
+          lineTotalMinor: subtotalMinor,
+          allocationId: alloc.id,
+        }
+      })
+
+    const cashTenderedMinor = Math.round(cashTendered * 100)
+
+    const result = await offlineSalesService.recordOfflineSale({
+      userId,
+      businessId,
+      branchId,
+      deviceId,
+      authorizationId,
+      items,
+      cashTenderedMinor,
     })
 
-  const cashTenderedMinor = Math.round(cashTendered * 100)
+    const stored = await offlineSalesRepository.findSaleById(result.provisionalSaleId)
+    const storedSubtotalMinor = (stored?.items || []).reduce((sum, i) => sum + i.subtotalMinor, 0)
+    const computedTaxMinor = Math.max(0, result.totalAmountMinor - storedSubtotalMinor)
 
-  const result = await offlineSalesService.recordOfflineSale({
-    userId,
-    businessId,
-    branchId,
-    deviceId,
-    authorizationId,
-    items,
-    cashTenderedMinor,
-  })
-
-  return {
-    id: result.provisionalSaleId,
-    saleNumber: result.provisionalReceiptNumber,
-    receiptNumber: result.provisionalReceiptNumber,
-    invoiceNumber: 'PENDING SYNCHRONIZATION — NOT AN OFFICIAL TAX INVOICE',
-    customerId: 'walk-in',
-    customerName: 'Walk-in Customer (Offline)',
-    cashierName: 'Offline Terminal',
-    businessSnapshot: {
-      name: 'Northstar Market',
-      address: 'Business address · Lahore',
-      phone: 'Business phone',
-      email: 'Business email',
-    },
-    items: items.map((i) => ({
-      productId: i.productId,
-      productName: i.name,
-      sku: i.sku,
-      unit: (i.unit as ProductUnit) || 'piece',
-      unitPrice: i.unitPriceMinor / 100,
-      quantity: i.quantity,
-      lineTotal: i.lineTotalMinor / 100,
-    })),
-    subtotal: result.totalAmountMinor / 100,
-    discountType: 'fixed',
-    discountValue: 0,
-    discountAmount: 0,
-    totalAmount: result.totalAmountMinor / 100,
-    payments: [{ method: 'cash', amount: cashTendered }],
-    amountPaid: cashTendered,
-    remainingBalance: 0,
-    changeReturned: result.changeReturnedMinor / 100,
-    createdAt: result.createdAt,
-    status: 'completed',
+    return {
+      id: result.provisionalSaleId,
+      saleNumber: result.provisionalReceiptNumber,
+      receiptNumber: result.provisionalReceiptNumber,
+      invoiceNumber: result.warning,
+      customerId: 'walk-in',
+      customerName: 'Walk-in Customer (Offline)',
+      cashierName: cashierName || 'Offline Terminal',
+      businessSnapshot: {
+        name: businessName || 'Store Workspace',
+        address: '',
+        phone: '',
+        email: '',
+      },
+      items: items.map((i) => ({
+        productId: i.productId,
+        productName: i.name,
+        sku: i.sku,
+        unit: (i.unit as ProductUnit) || 'piece',
+        unitPrice: i.unitPriceMinor / 100,
+        quantity: i.quantity,
+        lineTotal: i.lineTotalMinor / 100,
+      })),
+      subtotal: storedSubtotalMinor / 100,
+      discountType: 'fixed',
+      discountValue: 0,
+      discountAmount: 0,
+      taxAmount: computedTaxMinor / 100,
+      totalAmount: result.totalAmountMinor / 100,
+      payments: [{ method: 'cash', amount: cashTendered }],
+      amountPaid: cashTendered,
+      remainingBalance: 0,
+      changeReturned: result.changeReturnedMinor / 100,
+      createdAt: result.createdAt,
+      status: 'provisional',
+      isProvisional: true,
+      outboxCommandId: result.outboxCommandId,
+      provisionalNotice: result.warning,
+    }
+  } finally {
+    checkoutInProgress = false
   }
 }

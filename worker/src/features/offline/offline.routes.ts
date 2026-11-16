@@ -7,7 +7,7 @@ import {
   requireBusinessContext,
   requirePermission,
 } from '../../middleware/authMiddleware'
-import { resolveBranchContext } from '../../auth/tenantContext'
+import { resolveAuthorizedBranchIds, resolveBranchContext } from '../../auth/tenantContext'
 import { OfflineService } from './offline.service'
 import type {
   CreateOfflineAuthorizationInput,
@@ -15,12 +15,21 @@ import type {
 } from './offline.types'
 
 function getSigningSecret(ctx: RequestContext): string {
-  return ctx.env.AUTH_SECRET || 'dev-offline-signing-secret-key-32chars'
+  const secret = ctx.env.AUTH_SECRET?.trim()
+  if (!secret || secret.length < 16) {
+    throw new HttpError(
+      500,
+      'CONFIGURATION_ERROR',
+      'Server offline signing secret (AUTH_SECRET) is missing or insufficiently configured.'
+    )
+  }
+  return secret
 }
 
 export async function handleCreateOfflineAuthorization(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('pos_sale')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const requestedBranchId = ctx.req.headers.get('X-Branch-Id') || undefined
@@ -44,6 +53,7 @@ export async function handleCreateOfflineAuthorization(ctx: RequestContext): Pro
     businessId,
     branchId: branch.id,
     userId,
+    actorRole: ctx.tenant!.membership.role,
     input: body,
     secret: getSigningSecret(ctx),
   })
@@ -54,6 +64,7 @@ export async function handleCreateOfflineAuthorization(ctx: RequestContext): Pro
 export async function handleCommitOfflineSale(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('pos_sale')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const requestedBranchId = ctx.req.headers.get('X-Branch-Id') || undefined
@@ -93,6 +104,7 @@ export async function handleCommitOfflineSale(ctx: RequestContext): Promise<Resp
     input: body,
     idempotencyKey,
     secret: getSigningSecret(ctx),
+    actorRole: ctx.tenant!.membership.role,
   })
 
   return jsonResponse(result, result.isCached ? 200 : 201, ctx.requestId)
@@ -106,8 +118,20 @@ export async function handleReconcileAllocation(ctx: RequestContext): Promise<Re
   const businessId = ctx.tenant!.business.id
   const allocationId = ctx.params.id
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new OfflineService(ctx.env.DB)
-  const result = await service.reconcileAllocation(businessId, allocationId)
+  const result = await service.reconcileAllocation(
+    businessId,
+    allocationId,
+    authorizedBranchIds
+  )
 
   return jsonResponse(result, 200, ctx.requestId)
 }

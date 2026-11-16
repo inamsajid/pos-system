@@ -1,4 +1,5 @@
 import { HttpError } from '../../lib/errors'
+import { toMinorUnits } from '../../lib/money'
 import type {
   CreateSaleInput,
   CreateSaleItemInput,
@@ -68,7 +69,7 @@ export function validateCreateSaleInput(input: unknown): CreateSaleInput {
           field: `items[${i}].unitPrice`,
         })
       }
-      unitPriceMinor = Math.round(item.unitPrice * 100)
+      unitPriceMinor = toMinorUnits(item.unitPrice)
     }
 
     let discountMinor: number | undefined
@@ -91,12 +92,20 @@ export function validateCreateSaleInput(input: unknown): CreateSaleInput {
       taxMinor = item.taxMinor
     }
 
+    const overrideReason =
+      typeof item.overrideReason === 'string' && item.overrideReason.trim()
+        ? item.overrideReason.trim()
+        : undefined
+    const taxOverride = typeof item.taxOverride === 'boolean' ? item.taxOverride : undefined
+
     validatedItems.push({
       productId: item.productId.trim(),
       quantity: item.quantity,
       unitPriceMinor,
       discountMinor,
       taxMinor,
+      overrideReason,
+      taxOverride,
     })
   }
 
@@ -123,8 +132,34 @@ export function validateCreateSaleInput(input: unknown): CreateSaleInput {
     if (typeof raw.discountValue !== 'number' || !Number.isFinite(raw.discountValue) || raw.discountValue < 0) {
       throw HttpError.badRequest('discountValue must be a non-negative number.', { field: 'discountValue' })
     }
+    if (discountType === 'percent' && raw.discountValue > 100) {
+      throw HttpError.badRequest('Percentage discount must be between 0 and 100.', { field: 'discountValue' })
+    }
     discountValue = raw.discountValue
   }
+
+  let discountMinor: number | undefined
+  if (raw.discountMinor !== undefined && raw.discountMinor !== null) {
+    if (typeof raw.discountMinor !== 'number' || !Number.isInteger(raw.discountMinor) || raw.discountMinor < 0) {
+      throw HttpError.badRequest('discountMinor must be a non-negative integer.', { field: 'discountMinor' })
+    }
+    discountMinor = raw.discountMinor
+    if (discountType === 'fixed' && raw.discountValue === undefined) {
+      discountValue = discountMinor / 100
+    } else if (
+      discountType === 'fixed' &&
+      raw.discountValue !== undefined &&
+      toMinorUnits(discountValue) !== discountMinor
+    ) {
+      throw HttpError.badRequest('Fixed discountValue and discountMinor do not match.', { field: 'discountMinor' })
+    }
+  }
+
+  const orderOverrideReason =
+    typeof raw.overrideReason === 'string' && raw.overrideReason.trim()
+      ? raw.overrideReason.trim()
+      : undefined
+  const orderTaxOverride = typeof raw.taxOverride === 'boolean' ? raw.taxOverride : undefined
 
   // Payments (optional, defaults to empty array / full credit)
   const validatedPayments: CreateSalePaymentInput[] = []
@@ -167,7 +202,7 @@ export function validateCreateSaleInput(input: unknown): CreateSaleInput {
             field: `payments[${j}].amount`,
           })
         }
-        amountMinor = Math.round(rawP.amount * 100)
+        amountMinor = toMinorUnits(rawP.amount)
       } else {
         throw HttpError.badRequest(`Payment amount is required at index ${j}.`, { field: `payments[${j}].amount` })
       }
@@ -192,6 +227,9 @@ export function validateCreateSaleInput(input: unknown): CreateSaleInput {
     items: validatedItems,
     discountType,
     discountValue,
+    discountMinor,
+    overrideReason: orderOverrideReason,
+    taxOverride: orderTaxOverride,
     payments: validatedPayments,
     notes,
     terminalId,

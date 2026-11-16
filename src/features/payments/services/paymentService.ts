@@ -178,6 +178,21 @@ export async function fetchCustomerPayments(): Promise<CustomerPayment[]> {
   return getPayments()
 }
 
+export async function fetchPaymentById(id: string): Promise<CustomerPayment | null> {
+  if (!isExplicitDemo()) {
+    try {
+      const dto = await apiClient.get<WorkerCustomerPaymentDTO>(`/customer-payments/${id}`)
+      const mapped = mapDtoToCustomerPayment(dto)
+      records = [mapped, ...records.filter((r) => r.id !== mapped.id)]
+      persist()
+      return copy(mapped)
+    } catch {
+      return getPaymentById(id) ?? null
+    }
+  }
+  return getPaymentById(id) ?? null
+}
+
 export function getPayments() {
   return syncPosPayments()
 }
@@ -189,6 +204,33 @@ export function getCustomerPayments(customerId: string) {
 }
 export function getInvoicePayments(saleId: string) {
   return getPayments().filter((payment) => payment.allocations.some((allocation) => allocation.saleId === saleId))
+}
+
+export async function fetchOutstandingInvoices(customerId?: string): Promise<OutstandingInvoice[]> {
+  if (!isExplicitDemo()) {
+    try {
+      const params = new URLSearchParams({ limit: '100' })
+      if (customerId) params.set('customerId', customerId)
+      const res = await apiClient.get<{ items: Array<{ id: string; saleId: string; invoiceNumber: string; businessDateKey?: string; createdAt: string; customerId: string; customerName?: string; totalAmountMinor: number; paidAmountMinor: number; remainingAmountMinor: number; status: string }> } | any[]>(`/invoices?${params.toString()}`)
+      const list = Array.isArray(res) ? res : res.items || []
+      return list
+        .filter((inv) => inv.status !== 'voided' && inv.remainingAmountMinor > 0)
+        .map((inv) => ({
+          invoiceId: inv.id,
+          saleId: inv.saleId || inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          date: inv.businessDateKey || inv.createdAt,
+          customerId: inv.customerId,
+          customerName: inv.customerName || 'Customer',
+          totalAmount: inv.totalAmountMinor / 100,
+          amountPaid: inv.paidAmountMinor / 100,
+          outstanding: inv.remainingAmountMinor / 100,
+        }))
+    } catch {
+      return getOutstandingInvoices(customerId)
+    }
+  }
+  return getOutstandingInvoices(customerId)
 }
 
 export function getOutstandingInvoices(customerId?: string): OutstandingInvoice[] {
@@ -230,7 +272,7 @@ export async function createCustomerPayment(draft: PaymentDraft) {
         reference: m.reference || null,
       })),
       allocations: draft.allocations.map((a) => ({
-        invoiceId: a.saleId,
+        invoiceId: a.invoiceId || a.saleId,
         amountMinor: Math.round(a.amount * 100),
       })),
       notes: draft.notes?.trim() || null,
@@ -298,7 +340,7 @@ export async function createCustomerPayment(draft: PaymentDraft) {
     unallocatedAmount: unallocated,
     source: 'manual',
     receivedAt: draft.receivedAt,
-    receivedBy: 'Ayesha Khan',
+    receivedBy: 'Staff Member',
     notes: draft.notes?.trim() || undefined,
     createdAt: now,
   }

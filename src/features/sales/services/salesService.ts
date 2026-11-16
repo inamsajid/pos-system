@@ -1,4 +1,4 @@
-import { apiClient } from '../../../lib/api-client'
+import { apiClient, ApiError } from '../../../lib/api-client'
 import { getSaleById, getSales, getSaleByInvoiceNumber } from '../../pos/services/checkoutService'
 import type { CheckoutSale, CheckoutMethod, SaleItemSnapshot, SalePayment } from '../../pos/types/checkout.types'
 import type { ProductUnit } from '../../products/types/product.types'
@@ -29,6 +29,7 @@ interface WorkerSaleDTO {
   discountType: 'fixed' | 'percent'
   discountValue: number
   discountMinor: number
+  taxMinor?: number
   totalAmountMinor: number
   amountPaidMinor: number
   remainingBalanceMinor: number
@@ -80,23 +81,24 @@ function mapWorkerSaleToCheckoutSale(dto: WorkerSaleDTO): CheckoutSale {
     customerAddress: [dto.customerSnapshot?.address, dto.customerSnapshot?.city].filter(Boolean).join(', ') || undefined,
     cashierName: dto.cashierName || 'Cashier',
     businessSnapshot: {
-      name: 'Northstar Market',
-      address: 'Business address · Lahore',
-      phone: 'Business phone',
-      email: 'Business email',
+      name: 'Store Workspace',
+      address: '',
+      phone: '',
+      email: '',
     },
     items,
     subtotal: dto.subtotalMinor / 100,
     discountType: dto.discountType,
     discountValue: dto.discountValue,
     discountAmount: dto.discountMinor / 100,
+    taxAmount: (dto.taxMinor ?? 0) / 100,
     totalAmount: dto.totalAmountMinor / 100,
     payments,
     amountPaid: dto.amountPaidMinor / 100,
     remainingBalance: dto.remainingBalanceMinor / 100,
     changeReturned: dto.changeReturnedMinor / 100,
     createdAt: dto.createdAt,
-    status: 'completed',
+    status: (dto.status as any) || 'completed',
   }
 }
 
@@ -115,8 +117,11 @@ export const salesService = {
       try {
         const dto = await apiClient.get<WorkerSaleDTO>(`/sales/${id}`)
         return mapWorkerSaleToCheckoutSale(dto)
-      } catch {
-        return undefined
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          return undefined
+        }
+        throw err
       }
     }
     return getSaleById(id)

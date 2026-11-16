@@ -70,23 +70,19 @@ export const expenseService = {
     totalPages: number
   }> {
     if (!isExplicitDemo()) {
-      try {
-        const query = new URLSearchParams()
-        if (filters.branchId) query.set('branchId', filters.branchId)
-        if (filters.categoryId) query.set('categoryId', filters.categoryId)
-        if (filters.paymentMethod) query.set('paymentMethod', filters.paymentMethod)
-        if (filters.status) query.set('status', filters.status)
-        if (filters.startDate) query.set('startDate', filters.startDate)
-        if (filters.endDate) query.set('endDate', filters.endDate)
-        if (filters.search) query.set('search', filters.search)
-        if (filters.page) query.set('page', String(filters.page))
-        if (filters.limit) query.set('limit', String(filters.limit))
+      const query = new URLSearchParams()
+      if (filters.branchId) query.set('branchId', filters.branchId)
+      if (filters.categoryId) query.set('categoryId', filters.categoryId)
+      if (filters.paymentMethod) query.set('paymentMethod', filters.paymentMethod)
+      if (filters.status) query.set('status', filters.status)
+      if (filters.startDate) query.set('startDate', filters.startDate)
+      if (filters.endDate) query.set('endDate', filters.endDate)
+      if (filters.search) query.set('search', filters.search)
+      if (filters.page) query.set('page', String(filters.page))
+      if (filters.limit) query.set('limit', String(filters.limit))
 
-        const qs = query.toString()
-        return await apiClient.get(`/expenses${qs ? `?${qs}` : ''}`)
-      } catch (err) {
-        console.warn('Backend expenses API failed, falling back to mock data:', err)
-      }
+      const qs = query.toString()
+      return apiClient.get(`/expenses${qs ? `?${qs}` : ''}`)
     }
 
     let filtered = [...mockExpenses]
@@ -117,11 +113,7 @@ export const expenseService = {
 
   async getExpenseSummary(): Promise<ExpenseSummary> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.get<ExpenseSummary>('/expenses/summary')
-      } catch (err) {
-        console.warn('Backend expenses summary API failed, using mock:', err)
-      }
+      return apiClient.get<ExpenseSummary>('/expenses/summary')
     }
 
     const posted = mockExpenses.filter(e => e.status === 'posted')
@@ -161,11 +153,7 @@ export const expenseService = {
 
   async getExpenseById(id: string): Promise<Expense> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.get<Expense>(`/expenses/${id}`)
-      } catch (err) {
-        console.warn('Backend expenses get API failed, checking mock:', err)
-      }
+      return apiClient.get<Expense>(`/expenses/${id}`)
     }
     const item = mockExpenses.find(e => e.id === id || e.expenseNumber === id)
     if (!item) throw new Error('Expense not found.')
@@ -185,11 +173,7 @@ export const expenseService = {
     }
 
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<Expense>('/expenses', payload)
-      } catch (err) {
-        console.warn('Backend expenses create failed, using mock:', err)
-      }
+      return apiClient.post<Expense>('/expenses', payload)
     }
 
     const cat = mockCategories.find(c => c.id === draft.categoryId)
@@ -220,11 +204,7 @@ export const expenseService = {
 
   async voidExpense(id: string, reason: string): Promise<Expense> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<Expense>(`/expenses/${id}/void`, { reason })
-      } catch (err) {
-        console.warn('Backend expenses void failed, using mock:', err)
-      }
+      return apiClient.post<Expense>(`/expenses/${id}/void`, { reason })
     }
 
     const index = mockExpenses.findIndex(e => e.id === id || e.expenseNumber === id)
@@ -244,22 +224,14 @@ export const expenseService = {
 
   async getCategories(): Promise<ExpenseCategory[]> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.get<ExpenseCategory[]>('/expense-categories')
-      } catch (err) {
-        console.warn('Backend expense categories get failed, using mock:', err)
-      }
+      return apiClient.get<ExpenseCategory[]>('/expense-categories')
     }
     return [...mockCategories]
   },
 
   async createCategory(name: string, description?: string): Promise<ExpenseCategory> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.post<ExpenseCategory>('/expense-categories', { name, description })
-      } catch (err) {
-        console.warn('Backend expense categories create failed, using mock:', err)
-      }
+      return apiClient.post<ExpenseCategory>('/expense-categories', { name, description })
     }
 
     const newCategory: ExpenseCategory = {
@@ -279,11 +251,7 @@ export const expenseService = {
     updates: { title?: string; notes?: string; receiptAttachmentUrl?: string }
   ): Promise<Expense> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.patch<Expense>(`/expenses/${id}`, updates)
-      } catch (err) {
-        console.warn('Backend expenses update failed, using mock:', err)
-      }
+      return apiClient.patch<Expense>(`/expenses/${id}`, updates)
     }
 
     const index = mockExpenses.findIndex((e) => e.id === id || e.expenseNumber === id)
@@ -302,11 +270,7 @@ export const expenseService = {
     updates: { name?: string; description?: string; status?: 'active' | 'archived' }
   ): Promise<ExpenseCategory> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.patch<ExpenseCategory>(`/expense-categories/${id}`, updates)
-      } catch (err) {
-        console.warn('Backend expense categories update failed, using mock:', err)
-      }
+      return apiClient.patch<ExpenseCategory>(`/expense-categories/${id}`, updates)
     }
 
     const index = mockCategories.findIndex((c) => c.id === id)
@@ -322,11 +286,7 @@ export const expenseService = {
 
   async deleteCategory(id: string): Promise<{ deleted: boolean; archived: boolean }> {
     if (!isExplicitDemo()) {
-      try {
-        return await apiClient.delete<{ deleted: boolean; archived: boolean }>(`/expense-categories/${id}`)
-      } catch (err) {
-        console.warn('Backend expense categories delete failed, using mock:', err)
-      }
+      return apiClient.delete<{ deleted: boolean; archived: boolean }>(`/expense-categories/${id}`)
     }
 
     const index = mockCategories.findIndex((c) => c.id === id)
@@ -342,4 +302,3 @@ export const expenseService = {
     return { deleted: true, archived: false }
   },
 }
-

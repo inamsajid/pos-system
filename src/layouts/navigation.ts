@@ -37,18 +37,18 @@ export const navigationGroups: NavigationGroup[] = [
   {
     label: 'CONTACTS & LEDGERS',
     items: [
-      { label: 'Customers', path: '/customers', icon: Users, requiredPermission: 'catalog_read' },
+      { label: 'Customers', path: '/customers', icon: Users, requiredPermission: 'customer_read' },
       { label: 'Customer Ledger', path: '/ledger?tab=customers', icon: BookOpen, requiredPermission: 'reports_view' },
-      { label: 'Suppliers', path: '/suppliers', icon: Truck, requiredPermission: 'catalog_read' },
+      { label: 'Suppliers', path: '/suppliers', icon: Truck, requiredPermission: 'supplier_read' },
       { label: 'Supplier Ledger', path: '/ledger?tab=suppliers', icon: BookOpen, requiredPermission: 'reports_view' },
     ],
   },
   {
     label: 'OPERATIONS',
     items: [
-      { label: 'Sales', path: '/sales', icon: CircleDollarSign, requiredPermission: 'pos_sale' },
-      { label: 'Invoices', path: '/invoices', icon: Receipt, requiredPermission: 'pos_sale' },
-      { label: 'Purchases', path: '/purchases', icon: ShoppingBag, requiredPermission: 'purchase_order' },
+      { label: 'Sales', path: '/sales', icon: CircleDollarSign, requiredPermission: 'sales_read' },
+      { label: 'Invoices', path: '/invoices', icon: Receipt, requiredPermission: 'sales_read' },
+      { label: 'Purchases', path: '/purchases', icon: ShoppingBag, requiredPermission: 'purchase_read' },
     ],
   },
   {

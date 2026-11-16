@@ -16,6 +16,7 @@ import {
 export async function handleListGoodsReceipts(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('purchase_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseGoodsReceiptQueryParams(ctx.url)
@@ -42,6 +43,7 @@ export async function handleListGoodsReceipts(ctx: RequestContext): Promise<Resp
 export async function handleGetGoodsReceipt(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('purchase_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const receiptId = ctx.params.id
@@ -65,19 +67,29 @@ export async function handleReceiveGoods(ctx: RequestContext): Promise<Response>
   await requireBusinessContext(ctx)
   await requirePermission('receive_goods')(ctx)
 
+  const businessId = ctx.tenant!.business.id
   const purchaseId = ctx.params.id
   const body = await parseJsonBody(ctx.req)
   const input = validateCreateGoodsReceiptInput(body)
+
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
 
   const idempotencyKey = ctx.req.headers.get('Idempotency-Key')
   const service = new GoodsReceiptsService(ctx.env.DB)
 
   const receipt = await service.receiveGoods(
-    ctx.tenant!.business.id,
+    businessId,
     purchaseId,
     ctx.auth!.user.id,
     input,
-    idempotencyKey
+    idempotencyKey,
+    authorizedBranchIds
   )
 
   return jsonResponse(receipt, 201, ctx.requestId)

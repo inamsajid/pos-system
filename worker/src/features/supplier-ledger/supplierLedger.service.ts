@@ -24,10 +24,17 @@ export class SupplierLedgerService {
       throw HttpError.notFound('Supplier not found.')
     }
 
+    const scopedBranchIds = filters.branchId
+      ? authorizedBranchIds.includes(filters.branchId)
+        ? [filters.branchId]
+        : []
+      : authorizedBranchIds
+
     const openingBalanceMinor = await this.repo.getOpeningPayableBeforeDate(
       businessId,
       supplierId,
-      filters.startDate
+      filters.startDate,
+      scopedBranchIds
     )
 
     const totalCount = await this.repo.countEntries(
@@ -81,14 +88,15 @@ export class SupplierLedgerService {
 
   async getSupplierFinancialSummary(
     businessId: string,
-    supplierId: string
+    supplierId: string,
+    authorizedBranchIds?: string[]
   ): Promise<SupplierFinancialSummaryDTO> {
     const supplier = await this.repo.getSupplier(businessId, supplierId)
     if (!supplier) {
       throw HttpError.notFound('Supplier not found.')
     }
 
-    return this.repo.getFinancialSummary(businessId, supplierId)
+    return this.repo.getFinancialSummary(businessId, supplierId, authorizedBranchIds)
   }
 }
 

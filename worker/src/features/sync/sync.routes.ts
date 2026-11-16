@@ -4,6 +4,7 @@ import { parseJsonBody } from '../../lib/validation'
 import {
   requireAuth,
   requireBusinessContext,
+  requirePermission,
 } from '../../middleware/authMiddleware'
 import { resolveAuthorizedBranchIds } from '../../auth/tenantContext'
 import { SyncService } from './sync.service'
@@ -12,6 +13,7 @@ import type { RegisterDeviceInput, DeviceHeartbeatInput, AckChangesInput } from 
 export async function handleRegisterDevice(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const body = await parseJsonBody<RegisterDeviceInput>(ctx.req)
   const service = new SyncService(ctx.env.DB)
@@ -27,6 +29,7 @@ export async function handleRegisterDevice(ctx: RequestContext): Promise<Respons
 export async function handleListDevices(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const service = new SyncService(ctx.env.DB)
   const devices = await service.listDevices(
@@ -41,10 +44,16 @@ export async function handleListDevices(ctx: RequestContext): Promise<Response> 
 export async function handleDeviceHeartbeat(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const body = await parseJsonBody<DeviceHeartbeatInput>(ctx.req)
   const service = new SyncService(ctx.env.DB)
-  const result = await service.heartbeat(ctx.tenant!.business.id, body.installationId)
+  const result = await service.heartbeat(
+    ctx.tenant!.business.id,
+    body.installationId,
+    ctx.auth!.user.id,
+    ctx.tenant!.membership.role
+  )
 
   return jsonResponse(result, 200, ctx.requestId)
 }
@@ -52,6 +61,7 @@ export async function handleDeviceHeartbeat(ctx: RequestContext): Promise<Respon
 export async function handleRevokeDevice(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const deviceId = ctx.params.id
   const service = new SyncService(ctx.env.DB)
@@ -68,6 +78,7 @@ export async function handleRevokeDevice(ctx: RequestContext): Promise<Response>
 export async function handleGetChanges(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const installationId =
@@ -89,6 +100,7 @@ export async function handleGetChanges(ctx: RequestContext): Promise<Response> {
   const result = await service.pullChanges({
     businessId,
     userId: ctx.auth!.user.id,
+    userRole: ctx.tenant!.membership.role,
     installationId,
     cursor,
     limit,
@@ -102,6 +114,7 @@ export async function handleGetChanges(ctx: RequestContext): Promise<Response> {
 export async function handleAckChanges(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sync_use')(ctx)
 
   const body = await parseJsonBody<AckChangesInput>(ctx.req)
   const installationId =
@@ -110,7 +123,9 @@ export async function handleAckChanges(ctx: RequestContext): Promise<Response> {
   const result = await service.ackChanges(
     ctx.tenant!.business.id,
     installationId,
-    body.cursor
+    body.cursor,
+    ctx.auth!.user.id,
+    ctx.tenant!.membership.role
   )
 
   return jsonResponse(result, 200, ctx.requestId)

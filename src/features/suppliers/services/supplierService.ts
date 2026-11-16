@@ -17,11 +17,37 @@ import type {
   SupplierTransaction,
   SupplierProductAssociation,
 } from '../types/supplier.types'
-import { apiClient } from '../../../lib/api-client'
+import { apiClient, ApiError } from '../../../lib/api-client'
 import { fetchSupplierLedger, fetchSupplierLedgerSummary } from './supplierLedgerService'
 
 function isExplicitDemo(): boolean {
   return import.meta.env?.VITE_DATA_SOURCE === 'mock'
+}
+
+interface WorkerPurchaseSummaryItem {
+  id: string
+  supplierId: string
+  purchaseNumber: string
+  purchaseDateKey?: string
+  createdAt: string
+  items?: unknown[]
+  itemsCount?: number
+  totalAmountMinor: number
+  paidAmountMinor: number
+  remainingAmountMinor: number
+  status: string
+}
+
+interface WorkerSupplierPaymentItem {
+  id: string
+  supplierId: string
+  receiptNumber: string
+  paidAt?: string
+  createdAt: string
+  method: string
+  amountMinor: number
+  unallocatedAmountMinor?: number
+  allocations?: Array<{ purchaseNumber: string }>
 }
 
 let mockSuppliers = [...supplierMockData]
@@ -31,15 +57,8 @@ export const supplierService = {
     if (isExplicitDemo()) {
       return mockSuppliers.map(s => ({ ...s }))
     }
-    try {
-      const data = await apiClient.get<Supplier[]>('/api/v1/suppliers', { params: { limit: 100 } })
-      return data || []
-    } catch (err) {
-      if (isExplicitDemo()) {
-        return mockSuppliers.map(s => ({ ...s }))
-      }
-      throw err
-    }
+    const data = await apiClient.get<Supplier[]>('/suppliers', { params: { limit: 100 } })
+    return data || []
   },
 
   async getSupplierById(id: string): Promise<Supplier | undefined> {
@@ -47,7 +66,14 @@ export const supplierService = {
       const s = mockSuppliers.find(x => x.id === id)
       return s ? { ...s } : undefined
     }
-    return apiClient.get<Supplier>(`/api/v1/suppliers/${id}`)
+    try {
+      return await apiClient.get<Supplier>(`/suppliers/${id}`)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return undefined
+      }
+      throw err
+    }
   },
 
   async createSupplier(d: SupplierDraft): Promise<Supplier> {
@@ -67,7 +93,7 @@ export const supplierService = {
       return { ...s }
     }
 
-    return apiClient.post<Supplier>('/api/v1/suppliers', d)
+    return apiClient.post<Supplier>('/suppliers', d)
   },
 
   async updateSupplier(id: string, d: SupplierDraft): Promise<Supplier> {
@@ -80,7 +106,7 @@ export const supplierService = {
       return { ...s }
     }
 
-    return apiClient.patch<Supplier>(`/api/v1/suppliers/${id}`, d)
+    return apiClient.patch<Supplier>(`/suppliers/${id}`, d)
   },
 
   async updateSupplierStatus(id: string, status: 'active' | 'inactive'): Promise<Supplier> {
@@ -92,7 +118,7 @@ export const supplierService = {
       return { ...s }
     }
 
-    return apiClient.patch<Supplier>(`/api/v1/suppliers/${id}/status`, { status })
+    return apiClient.patch<Supplier>(`/suppliers/${id}/status`, { status })
   },
 
   async archiveSupplier(id: string): Promise<Supplier> {
@@ -104,16 +130,12 @@ export const supplierService = {
       return { ...s }
     }
 
-    return apiClient.delete<Supplier>(`/api/v1/suppliers/${id}`)
+    return apiClient.delete<Supplier>(`/suppliers/${id}`)
   },
 
   async getSupplierFinancialSummary(id: string): Promise<SupplierFinancialSummary> {
     if (!isExplicitDemo()) {
-      try {
-        return await fetchSupplierLedgerSummary(id)
-      } catch {
-        // Fall back only if network fails
-      }
+      return fetchSupplierLedgerSummary(id)
     }
     return (
       supplierFinancialMockData.find(x => x.supplierId === id) ?? {
@@ -128,20 +150,60 @@ export const supplierService = {
   },
 
   async getSupplierPurchaseHistory(id: string): Promise<SupplierPurchase[]> {
+    if (!isExplicitDemo()) {
+      const res = await apiClient.get<WorkerPurchaseSummaryItem[] | { items: WorkerPurchaseSummaryItem[] }>(
+        '/purchases',
+        { params: { supplierId: id, limit: 100 } }
+      )
+      const rows = Array.isArray(res) ? res : res?.items || []
+      return rows
+        .filter(p => p.status !== 'cancelled')
+        .map(p => ({
+          id: p.id,
+          supplierId: p.supplierId,
+          reference: p.purchaseNumber,
+          date: p.purchaseDateKey || p.createdAt,
+          items: Array.isArray(p.items) ? p.items.length : p.itemsCount ?? 0,
+          totalAmount: p.totalAmountMinor / 100,
+          paidAmount: p.paidAmountMinor / 100,
+          status:
+            p.remainingAmountMinor <= 0 && p.totalAmountMinor > 0
+              ? 'paid'
+              : p.paidAmountMinor > 0
+                ? 'partial'
+                : 'unpaid',
+        }))
+    }
     return supplierPurchaseMockData.filter(x => x.supplierId === id).map(x => ({ ...x }))
   },
 
   async getSupplierPaymentHistory(id: string): Promise<SupplierPayment[]> {
+    if (!isExplicitDemo()) {
+      const res = await apiClient.get<WorkerSupplierPaymentItem[] | { items: WorkerSupplierPaymentItem[] }>(
+        '/supplier-payments',
+        { params: { supplierId: id, limit: 100 } }
+      )
+      const rows = Array.isArray(res) ? res : res?.items || []
+      return rows.map(p => ({
+        id: p.id,
+        supplierId: p.supplierId,
+        reference: p.receiptNumber,
+        date: p.paidAt || p.createdAt,
+        method: (p.method || 'cash').replace('_', ' '),
+        amount: p.amountMinor / 100,
+        unallocatedAmount:
+          typeof p.unallocatedAmountMinor === 'number' ? p.unallocatedAmountMinor / 100 : undefined,
+        purchaseReference:
+          (p.allocations || []).map(a => a.purchaseNumber).filter(Boolean).join(', ') || 'Advance',
+        status: 'completed',
+      }))
+    }
     return supplierPaymentMockData.filter(x => x.supplierId === id).map(x => ({ ...x }))
   },
 
   async getSupplierAccountTransactions(id: string): Promise<SupplierTransaction[]> {
     if (!isExplicitDemo()) {
-      try {
-        return await fetchSupplierLedger(id)
-      } catch {
-        // Fall back only if network fails
-      }
+      return fetchSupplierLedger(id)
     }
     return supplierTransactionMockData.filter(x => x.supplierId === id).map(x => ({ ...x }))
   },
@@ -156,28 +218,24 @@ export const supplierService = {
 
     let rawAssociations: SupplierProductAssociation[] = []
     if (!isExplicitDemo()) {
-      try {
-        const fetched = await apiClient.get<Array<{
-          id: string
-          supplierId: string
-          productId: string
-          supplierSku?: string
-          purchasePrice?: number
-          isPreferred: boolean
-          createdAt: string
-        }>>(`/api/v1/suppliers/${id}/products`)
-        rawAssociations = fetched.map(a => ({
-          id: a.id,
-          supplierId: a.supplierId,
-          productId: a.productId,
-          supplierSku: a.supplierSku,
-          purchasePrice: a.purchasePrice,
-          isPreferred: a.isPreferred,
-          createdAt: a.createdAt,
-        }))
-      } catch {
-        rawAssociations = supplierProductMockData.filter(a => a.supplierId === id)
-      }
+      const fetched = await apiClient.get<Array<{
+        id: string
+        supplierId: string
+        productId: string
+        supplierSku?: string
+        purchasePrice?: number
+        isPreferred: boolean
+        createdAt: string
+      }>>(`/suppliers/${id}/products`)
+      rawAssociations = (fetched || []).map(a => ({
+        id: a.id,
+        supplierId: a.supplierId,
+        productId: a.productId,
+        supplierSku: a.supplierSku,
+        purchasePrice: a.purchasePrice,
+        isPreferred: a.isPreferred,
+        createdAt: a.createdAt,
+      }))
     } else {
       rawAssociations = supplierProductMockData.filter(a => a.supplierId === id)
     }

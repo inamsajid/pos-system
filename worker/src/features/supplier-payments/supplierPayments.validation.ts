@@ -30,14 +30,80 @@ export function validateCreateSupplierPaymentInput(body: unknown): CreateSupplie
     })
   }
 
-  if (
-    typeof raw.method !== 'string' ||
-    !ALLOWED_METHODS.includes(raw.method as SupplierPaymentMethod)
-  ) {
-    throw HttpError.badRequest(
-      `Payment method must be one of: ${ALLOWED_METHODS.join(', ')}`,
-      { field: 'method' }
-    )
+  let validatedPaymentMethods: CreateSupplierPaymentInput['paymentMethods']
+  let primaryMethod: SupplierPaymentMethod = 'cash'
+  let primaryReference: string | null = null
+
+  if (raw.paymentMethods !== undefined) {
+    if (!Array.isArray(raw.paymentMethods) || raw.paymentMethods.length === 0) {
+      throw HttpError.badRequest('Payment methods must be a non-empty array when provided.', {
+        field: 'paymentMethods',
+      })
+    }
+
+    let methodSum = 0
+    validatedPaymentMethods = []
+
+    for (let i = 0; i < raw.paymentMethods.length; i++) {
+      const pm = raw.paymentMethods[i]
+      if (!pm || typeof pm !== 'object') {
+        throw HttpError.badRequest(`Payment method at index ${i} is invalid.`, {
+          field: `paymentMethods[${i}]`,
+        })
+      }
+
+      const { method: pmMethod, amountMinor: pmAmount, reference: pmRef } = pm as Record<string, unknown>
+
+      if (typeof pmMethod !== 'string' || !ALLOWED_METHODS.includes(pmMethod as SupplierPaymentMethod)) {
+        throw HttpError.badRequest(
+          `Payment method at index ${i} must be one of: ${ALLOWED_METHODS.join(', ')}`,
+          { field: `paymentMethods[${i}].method` }
+        )
+      }
+
+      if (typeof pmAmount !== 'number' || !Number.isInteger(pmAmount) || pmAmount <= 0) {
+        throw HttpError.badRequest(
+          `Payment method amount at index ${i} must be a positive integer in minor units.`,
+          { field: `paymentMethods[${i}].amountMinor` }
+        )
+      }
+
+      methodSum += pmAmount
+      validatedPaymentMethods.push({
+        method: pmMethod as SupplierPaymentMethod,
+        amountMinor: pmAmount,
+        reference: typeof pmRef === 'string' && pmRef.trim().length > 0 ? pmRef.trim() : null,
+      })
+    }
+
+    if (methodSum !== raw.amountMinor) {
+      throw HttpError.badRequest(
+        `Sum of payment methods (${methodSum}) must equal the total payment amount (${raw.amountMinor}).`,
+        { field: 'paymentMethods' }
+      )
+    }
+
+    primaryMethod = validatedPaymentMethods[0].method
+    primaryReference = validatedPaymentMethods[0].reference || null
+  } else {
+    if (
+      typeof raw.method !== 'string' ||
+      !ALLOWED_METHODS.includes(raw.method as SupplierPaymentMethod)
+    ) {
+      throw HttpError.badRequest(
+        `Payment method must be one of: ${ALLOWED_METHODS.join(', ')}`,
+        { field: 'method' }
+      )
+    }
+    primaryMethod = raw.method as SupplierPaymentMethod
+    primaryReference = typeof raw.reference === 'string' && raw.reference.trim().length > 0 ? raw.reference.trim() : null
+    validatedPaymentMethods = [
+      {
+        method: primaryMethod,
+        amountMinor: raw.amountMinor,
+        reference: primaryReference,
+      },
+    ]
   }
 
   let validatedAllocations: SupplierPaymentAllocationInput[] | undefined
@@ -93,8 +159,9 @@ export function validateCreateSupplierPaymentInput(body: unknown): CreateSupplie
     branchId: typeof raw.branchId === 'string' && raw.branchId.trim().length > 0 ? raw.branchId.trim() : undefined,
     supplierId: raw.supplierId.trim(),
     amountMinor: raw.amountMinor,
-    method: raw.method as SupplierPaymentMethod,
-    reference: typeof raw.reference === 'string' && raw.reference.trim().length > 0 ? raw.reference.trim() : null,
+    method: primaryMethod,
+    reference: primaryReference,
+    paymentMethods: validatedPaymentMethods,
     notes: typeof raw.notes === 'string' && raw.notes.trim().length > 0 ? raw.notes.trim() : null,
     allocations: validatedAllocations,
   }

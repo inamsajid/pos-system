@@ -184,18 +184,34 @@ export class StaffRepository {
     await this.db.prepare(sql).bind(role, businessId, memberId).run()
   }
 
-  async updateMemberBranches(memberId: string, branchIds: string[]): Promise<void> {
-    // Delete existing
-    await this.db.prepare(`DELETE FROM member_branches WHERE member_id = ?`).bind(memberId).run()
+  async findActiveBranchIds(businessId: string, branchIds: string[]): Promise<string[]> {
+    if (branchIds.length === 0) return []
+    const placeholders = branchIds.map(() => '?').join(', ')
+    const result = await this.db
+      .prepare(
+        `SELECT id FROM branches
+         WHERE business_id = ? AND status = 'active' AND id IN (${placeholders})`
+      )
+      .bind(businessId, ...branchIds)
+      .all<{ id: string }>()
+    return (result.results || []).map((r) => r.id)
+  }
 
-    // Insert new
+  async updateMemberBranches(memberId: string, branchIds: string[]): Promise<void> {
+    const statements: D1PreparedStatement[] = [
+      this.db.prepare(`DELETE FROM member_branches WHERE member_id = ?`).bind(memberId),
+    ]
+
     for (const branchId of branchIds) {
       const id = `mb-${crypto.randomUUID()}`
-      await this.db
-        .prepare(`INSERT INTO member_branches (id, member_id, branch_id, created_at) VALUES (?, ?, ?, datetime('now'))`)
-        .bind(id, memberId, branchId)
-        .run()
+      statements.push(
+        this.db
+          .prepare(`INSERT INTO member_branches (id, member_id, branch_id, created_at) VALUES (?, ?, ?, datetime('now'))`)
+          .bind(id, memberId, branchId)
+      )
     }
+
+    await this.db.batch(statements)
   }
 
   async setMemberActiveStatus(businessId: string, memberId: string, isActive: boolean): Promise<void> {
@@ -300,6 +316,47 @@ export class StaffRepository {
       LIMIT 1
     `
     return this.db.prepare(sql).bind(tokenHash).first<any>()
+  }
+
+  async getInvitationDetails(tokenHash: string): Promise<{
+    id: string
+    business_id: string
+    email: string
+    role: string
+    branch_ids_json: string | null
+    invited_by: string
+    expires_at: string
+    used_at: string | null
+    business_name: string | null
+    invited_by_name: string | null
+  } | null> {
+    const sql = `
+      SELECT i.id, i.business_id, i.email, i.role, i.branch_ids_json, i.invited_by, i.expires_at, i.used_at,
+             b.name as business_name, u.name as invited_by_name
+      FROM staff_invitations i
+      JOIN businesses b ON b.id = i.business_id
+      LEFT JOIN users u ON u.id = i.invited_by
+      WHERE i.token_hash = ?
+      LIMIT 1
+    `
+    return this.db.prepare(sql).bind(tokenHash).first<any>()
+  }
+
+  async findUserByEmail(email: string): Promise<{ id: string; email: string; password_hash: string; status: string } | null> {
+    return this.db
+      .prepare('SELECT id, email, password_hash, status FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1')
+      .bind(email.trim().toLowerCase())
+      .first<any>()
+  }
+
+  async createUser(id: string, email: string, name: string, passwordHash: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO users (id, email, name, password_hash, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', datetime('now'), datetime('now'))`
+      )
+      .bind(id, email.trim().toLowerCase(), name.trim(), passwordHash)
+      .run()
   }
 
   async markInvitationUsed(invitationId: string): Promise<void> {

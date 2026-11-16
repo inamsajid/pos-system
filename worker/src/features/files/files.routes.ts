@@ -2,6 +2,7 @@ import type { RequestContext } from '../../router'
 import {
   requireAuth,
   requireBusinessContext,
+  requirePermission,
 } from '../../middleware/authMiddleware'
 import { resolveAuthorizedBranchIds } from '../../auth/tenantContext'
 import { jsonResponse } from '../../lib/response'
@@ -18,6 +19,7 @@ const filesService = new FilesService()
 export async function handleUploadFile(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('files_upload')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const userId = ctx.auth!.user.id
@@ -35,9 +37,23 @@ export async function handleUploadFile(ctx: RequestContext): Promise<Response> {
     throw HttpError.badRequest("Missing required 'file' binary field in form data")
   }
 
-  const category = (formData.get('category') as string) || ''
-  const relatedType = (formData.get('relatedType') as string) || undefined
-  const relatedId = (formData.get('relatedId') as string) || undefined
+  const rawCategory = (formData.get('category') as string) || ''
+  const rawEntityType = (formData.get('entityType') as string) || ''
+  const rawRelatedType = (formData.get('relatedType') as string) || rawEntityType || undefined
+  const rawRelatedId = (formData.get('relatedId') as string) || (formData.get('entityId') as string) || undefined
+
+  let category = rawCategory
+  if (!category && rawEntityType) {
+    if (rawEntityType === 'product') category = 'product_image'
+    else if (rawEntityType === 'expense') category = 'receipt_attachment'
+    else if (rawEntityType === 'invoice') category = 'invoice_pdf'
+    else if (rawEntityType === 'purchase') category = 'purchase_document'
+    else if (rawEntityType === 'supplier') category = 'supplier_document'
+    else category = 'receipt_attachment'
+  }
+
+  const relatedType = rawRelatedType
+  const relatedId = rawRelatedId
   const requestedBranchId = (formData.get('branchId') as string) || ctx.req.headers.get('X-Branch-Id') || undefined
 
   const authorizedBranchIds = await resolveAuthorizedBranchIds(
@@ -82,6 +98,7 @@ export async function handleUploadFile(ctx: RequestContext): Promise<Response> {
 export async function handleGetFileMetadata(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('files_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const role = ctx.tenant!.membership.role
@@ -116,6 +133,7 @@ export async function handleGetFileMetadata(ctx: RequestContext): Promise<Respon
 export async function handleGetFileContent(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('files_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const role = ctx.tenant!.membership.role
@@ -173,6 +191,7 @@ export async function handleGetFileContent(ctx: RequestContext): Promise<Respons
 export async function handleDeleteFile(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('files_delete')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const userId = ctx.auth!.user.id
@@ -183,11 +202,20 @@ export async function handleDeleteFile(ctx: RequestContext): Promise<Response> {
     throw HttpError.badRequest('File ID is required')
   }
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const result = await filesService.deleteFile(
     ctx.env,
     businessId,
     userId,
     role,
+    authorizedBranchIds,
     fileId
   )
   return jsonResponse(result, 200, ctx.requestId)
@@ -200,6 +228,7 @@ export async function handleDeleteFile(ctx: RequestContext): Promise<Response> {
 export async function handleListFiles(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('files_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const role = ctx.tenant!.membership.role
@@ -223,6 +252,7 @@ export async function handleListFiles(ctx: RequestContext): Promise<Response> {
   const result = await filesService.listFiles(
     ctx.env,
     businessId,
+    role,
     authorizedBranchIds,
     {
       category: category || undefined,

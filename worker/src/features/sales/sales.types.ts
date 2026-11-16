@@ -49,6 +49,10 @@ export interface SaleItemRow {
   product_name: string
   unit: string
   unit_price_minor: number
+  original_unit_price_minor?: number | null
+  price_override_reason?: string | null
+  price_override_by?: string | null
+  price_override_at?: string | null
   unit_cost_minor: number
   cogs_estimated: number
   quantity: number
@@ -66,6 +70,10 @@ export interface SaleItemDTO {
   productName: string
   unit: string
   unitPriceMinor: number
+  originalUnitPriceMinor?: number | null
+  priceOverrideReason?: string | null
+  priceOverrideBy?: string | null
+  priceOverrideAt?: string | null
   unitCostMinor: number
   cogsEstimated: boolean
   quantity: number
@@ -117,6 +125,8 @@ export interface CreateSaleItemInput {
   unitPriceMinor?: number
   discountMinor?: number
   taxMinor?: number
+  overrideReason?: string
+  taxOverride?: boolean
 }
 
 export interface CreateSalePaymentInput {
@@ -131,6 +141,9 @@ export interface CreateSaleInput {
   items: CreateSaleItemInput[]
   discountType?: SaleDiscountType
   discountValue?: number
+  discountMinor?: number
+  overrideReason?: string
+  taxOverride?: boolean
   payments?: CreateSalePaymentInput[]
   notes?: string
   terminalId?: string

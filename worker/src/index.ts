@@ -127,6 +127,7 @@ import {
   handleListInvitations,
   handleRevokeInvitation,
   handleAcceptInvitation,
+  handleGetInvitationInfo,
   handleUpdateStaffRole,
   handleUpdateStaffBranches,
   handleSuspendStaff,
@@ -310,6 +311,7 @@ router.delete('/api/v1/expense-categories/:id', handleDeleteExpenseCategory)
 // Staff Management endpoints (Step 14.3)
 router.get('/api/v1/staff', handleListStaff)
 router.get('/api/v1/staff/invitations', handleListInvitations)
+router.get('/api/v1/staff/invitations/info', handleGetInvitationInfo)
 router.post('/api/v1/staff/invitations', handleInviteStaff)
 router.post('/api/v1/staff/invitations/accept', handleAcceptInvitation)
 router.post('/api/v1/staff/invitations/:id/revoke', handleRevokeInvitation)

@@ -1,13 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/context/useAuth'
+import { queryKeys } from '../../../api/queryKeys'
 import { expenseService } from '../services/expenseService'
 
 export function useExpenseCategories() {
-  const { activeBusiness } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   const query = useQuery({
-    queryKey: ['expenseCategories', businessId],
+    queryKey: queryKeys.expenseCategories.list(scope),
     queryFn: () => expenseService.getCategories(),
     staleTime: 60_000,
   })
@@ -29,7 +34,7 @@ export function useCreateExpenseCategory() {
     mutationFn: ({ name, description }: { name: string; description?: string }) =>
       expenseService.createCategory(name, description),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenseCategories'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenseCategories.all })
     },
   })
 }
@@ -46,7 +51,7 @@ export function useUpdateExpenseCategory() {
       updates: { name?: string; description?: string; status?: 'active' | 'archived' }
     }) => expenseService.updateCategory(id, updates),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenseCategories'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenseCategories.all })
     },
   })
 }
@@ -57,8 +62,7 @@ export function useDeleteExpenseCategory() {
   return useMutation({
     mutationFn: (id: string) => expenseService.deleteCategory(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenseCategories'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.expenseCategories.all })
     },
   })
 }
-

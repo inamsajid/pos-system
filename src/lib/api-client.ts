@@ -1,15 +1,89 @@
 import type { ApiErrorResponse } from '../services/api/types'
 
-function getBaseUrl(): string {
-  const envUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '')
-  if (envUrl && (envUrl.startsWith('http://') || envUrl.startsWith('https://'))) {
-    return envUrl
+function appendQueryParams(
+  url: string,
+  params?: Record<string, string | number | boolean | undefined>
+): string {
+  if (!params) return url
+  const searchParams = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') {
+      searchParams.append(key, String(value))
+    }
   }
-  const path = envUrl || '/api/v1'
-  if (typeof window !== 'undefined' && window.location?.origin && window.location.origin !== 'null') {
-    return `${window.location.origin}${path.startsWith('/') ? path : `/${path}`}`
+  const qs = searchParams.toString()
+  if (!qs) return url
+  return `${url}${url.includes('?') ? '&' : '?'}${qs}`
+}
+
+export function getApiBaseUrl(envBaseUrl?: string): string {
+  const rawEnvUrl = (envBaseUrl ?? (import.meta.env?.VITE_API_BASE_URL as string | undefined))
+    ?.trim()
+    .replace(/\/+$/, '')
+
+  if (rawEnvUrl && (rawEnvUrl.startsWith('http://') || rawEnvUrl.startsWith('https://'))) {
+    try {
+      const parsed = new URL(rawEnvUrl)
+      const pathname = parsed.pathname.replace(/\/+$/, '')
+      if (!pathname) {
+        return `${parsed.origin}/api/v1`
+      }
+      return `${parsed.origin}${pathname}`
+    } catch {
+      return rawEnvUrl
+    }
   }
-  return path
+
+  if (!rawEnvUrl) {
+    return '/api/v1'
+  }
+
+  return rawEnvUrl.startsWith('/') ? rawEnvUrl : `/${rawEnvUrl}`
+}
+
+export function resolveApiUrl(
+  path: string,
+  params?: Record<string, string | number | boolean | undefined>,
+  envBaseUrl?: string
+): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return appendQueryParams(path, params)
+  }
+
+  const baseUrl = getApiBaseUrl(envBaseUrl)
+  let normalizedPath = path.startsWith('/') ? path : `/${path}`
+
+  let basePathOnly = baseUrl
+  if (baseUrl.startsWith('http://') || baseUrl.startsWith('https://')) {
+    try {
+      basePathOnly = new URL(baseUrl).pathname.replace(/\/+$/, '')
+    } catch {
+      basePathOnly = ''
+    }
+  }
+
+  const prefixesToCheck: string[] = []
+  if (basePathOnly) prefixesToCheck.push(basePathOnly)
+  const versionSuffixMatch = basePathOnly.match(/(\/api\/v\d+)$/i)
+  if (versionSuffixMatch && versionSuffixMatch[1] !== basePathOnly) {
+    prefixesToCheck.push(versionSuffixMatch[1])
+  }
+
+  const lowerPath = normalizedPath.toLowerCase()
+  for (const prefix of prefixesToCheck) {
+    const lowerPrefix = prefix.toLowerCase()
+    if (
+      lowerPath === lowerPrefix ||
+      lowerPath.startsWith(`${lowerPrefix}/`) ||
+      lowerPath.startsWith(`${lowerPrefix}?`)
+    ) {
+      normalizedPath = normalizedPath.slice(prefix.length) || '/'
+      break
+    }
+  }
+
+  const joined = normalizedPath === '/' ? baseUrl : `${baseUrl}${normalizedPath}`
+  return appendQueryParams(joined, params)
 }
 
 export interface StructuredApiErrorPayload {
@@ -114,21 +188,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     headers.set('X-Request-Id', resolvedRequestId)
   }
 
-  let finalPath = path.startsWith('/') ? path : `/${path}`
-  if (params) {
-    const searchParams = new URLSearchParams()
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null && value !== '') {
-        searchParams.append(key, String(value))
-      }
-    }
-    const qs = searchParams.toString()
-    if (qs) {
-      finalPath += `?${qs}`
-    }
-  }
-
-  const url = `${getBaseUrl()}${finalPath}`
+  const url = resolveApiUrl(path, params)
   const response = await fetch(url, {
     credentials: init.credentials ?? 'include',
     ...init,

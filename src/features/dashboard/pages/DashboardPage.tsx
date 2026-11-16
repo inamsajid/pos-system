@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowDownRight, ArrowRight, ArrowUpRight, CircleDollarSign, Clock3, Download, Package, ShoppingBag, Users, Wallet, Warehouse, AlertCircle } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, CircleDollarSign, Clock3, Download, Package, ShoppingBag, Users, Wallet, Warehouse } from 'lucide-react'
 import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
@@ -57,11 +57,6 @@ export function DashboardPage() {
 
   return <>
     <PageHeader title="Dashboard" description="Here's what's happening with your business today." action={<Button onClick={exportDemoSales}><Download size={15}/>Export sales</Button>}/>
-
-    <div className="mb-4 flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-xs text-blue-800">
-      <AlertCircle size={15} className="shrink-0 text-blue-600" />
-      <span><strong>Accounting Notice:</strong> Operating expenses and net profit calculations are unavailable in the current API version because expenses tables are pending backend implementation.</span>
-    </div>
 
     <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {metrics.map((metric) => {

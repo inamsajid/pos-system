@@ -39,6 +39,7 @@ export function mapPaymentRowToDTO(
     receivedBy: row.received_by,
     receivedByName: row.receiver_name,
     receivedAt: row.received_at,
+    status: row.status || 'posted',
     createdAt: row.created_at,
     paymentMethods: methods,
     allocations,
@@ -57,18 +58,20 @@ export class CustomerPaymentsRepository {
     filters: CustomerPaymentFilterParams,
     authorizedBranchIds: string[]
   ): { sql: string; bindings: (string | number)[] } {
-    const conditions: string[] = ['p.business_id = ?']
+    const conditions: string[] = ['p.business_id = ?', "p.status = 'posted'"]
     const bindings: (string | number)[] = [businessId]
 
-    // Branch scoping
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    // Branch scoping (fail closed if empty)
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('p.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`p.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -166,10 +169,11 @@ export class CustomerPaymentsRepository {
     paymentId: string,
     authorizedBranchIds: string[]
   ): Promise<CustomerPaymentDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND p.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND p.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT p.*, c.name as customer_name, u.name as receiver_name

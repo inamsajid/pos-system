@@ -48,10 +48,17 @@ export class ExpensesService {
     }
   }
 
-  async getExpenseById(businessId: string, id: string): Promise<ExpenseDTO> {
+  async getExpenseById(
+    businessId: string,
+    id: string,
+    authorizedBranchIds?: string[]
+  ): Promise<ExpenseDTO> {
     const expense = await this.repo.getExpenseById(businessId, id)
     if (!expense) {
       throw HttpError.notFound('Expense not found.')
+    }
+    if (authorizedBranchIds && !authorizedBranchIds.includes(expense.branchId)) {
+      throw HttpError.forbidden('You are not authorized to access expenses in this branch.')
     }
     return expense
   }
@@ -78,7 +85,7 @@ export class ExpensesService {
       }
     }
 
-    if (authorizedBranchIds && authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(input.branchId)) {
+    if (authorizedBranchIds && !authorizedBranchIds.includes(input.branchId)) {
       throw HttpError.forbidden('You are not authorized to record expenses for this branch.')
     }
 
@@ -165,11 +172,16 @@ export class ExpensesService {
     businessId: string,
     userId: string,
     expenseId: string,
-    input: UpdateExpenseInput
+    input: UpdateExpenseInput,
+    authorizedBranchIds?: string[]
   ): Promise<ExpenseDTO> {
     const existing = await this.repo.getExpenseById(businessId, expenseId)
     if (!existing) {
       throw HttpError.notFound('Expense not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(existing.branchId)) {
+      throw HttpError.forbidden('You are not authorized to update expenses in this branch.')
     }
 
     if (existing.status === 'voided') {
@@ -195,10 +207,20 @@ export class ExpensesService {
     return updated
   }
 
-  async voidExpense(businessId: string, userId: string, expenseId: string, input: VoidExpenseInput): Promise<ExpenseDTO> {
+  async voidExpense(
+    businessId: string,
+    userId: string,
+    expenseId: string,
+    input: VoidExpenseInput,
+    authorizedBranchIds?: string[]
+  ): Promise<ExpenseDTO> {
     const existing = await this.repo.getExpenseById(businessId, expenseId)
     if (!existing) {
       throw HttpError.notFound('Expense not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(existing.branchId)) {
+      throw HttpError.forbidden('You are not authorized to void expenses in this branch.')
     }
 
     if (existing.status === 'voided') {

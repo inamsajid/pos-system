@@ -54,8 +54,8 @@ export interface DashboardFinancialMetrics {
     totalCogsMinor: number
   }
   grossProfitMinor: number
-  expenses: UnavailableMetric
-  netProfit: UnavailableMetric
+  expenses: AvailableMetric<{ totalExpensesMinor: number }> | UnavailableMetric
+  netProfit: AvailableMetric<{ netProfitMinor: number }> | UnavailableMetric
 }
 
 export interface DashboardReportDTO {

@@ -1,4 +1,4 @@
-import { apiClient } from '../../../lib/api-client'
+import { apiClient, ApiError } from '../../../lib/api-client'
 import { getSales, getSaleById, getSaleByInvoiceNumber } from '../../pos/services/checkoutService'
 import { salesService } from '../../sales/services/salesService'
 import type { CheckoutSale, CheckoutMethod, SaleItemSnapshot, SalePayment } from '../../pos/types/checkout.types'
@@ -81,10 +81,10 @@ function mapWorkerSaleToCheckoutSale(dto: WorkerSaleDTO): CheckoutSale {
     customerAddress: [dto.customerSnapshot?.address, dto.customerSnapshot?.city].filter(Boolean).join(', ') || undefined,
     cashierName: dto.cashierName || 'Cashier',
     businessSnapshot: {
-      name: 'Northstar Market',
-      address: 'Business address · Lahore',
-      phone: 'Business phone',
-      email: 'Business email',
+      name: 'Store Workspace',
+      address: '',
+      phone: '',
+      email: '',
     },
     items,
     subtotal: dto.subtotalMinor / 100,
@@ -97,7 +97,7 @@ function mapWorkerSaleToCheckoutSale(dto: WorkerSaleDTO): CheckoutSale {
     remainingBalance: dto.remainingBalanceMinor / 100,
     changeReturned: dto.changeReturnedMinor / 100,
     createdAt: dto.createdAt,
-    status: 'completed',
+    status: (dto.status as any) || 'completed',
   }
 }
 
@@ -117,8 +117,11 @@ export const invoiceService = {
       try {
         const dto = await apiClient.get<WorkerSaleDTO>(`/invoices/${id}/sale`)
         return mapWorkerSaleToCheckoutSale(dto)
-      } catch {
-        return undefined
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          return undefined
+        }
+        throw err
       }
     }
     return getSaleById(id)

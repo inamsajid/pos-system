@@ -8,8 +8,8 @@ import { formatCurrency } from '../../../lib/currency'
 import { customerService } from '../../customers/services/customerService'
 import { getCustomerLedgerSummary } from '../../customers/services/customerLedgerService'
 import type { Customer } from '../../customers/types/customer.types'
-import { createCustomerPayment, getOutstandingInvoices } from '../services/paymentService'
-import type { PaymentMethod, PaymentMethodAllocation } from '../types/payment.types'
+import { createCustomerPayment, fetchOutstandingInvoices } from '../services/paymentService'
+import type { OutstandingInvoice, PaymentMethod, PaymentMethodAllocation } from '../types/payment.types'
 
 const methods: { value: PaymentMethod; label: string }[] = [
   { value: 'cash', label: 'Cash' }, { value: 'card', label: 'Card' },
@@ -38,7 +38,18 @@ export function ReceivePaymentPage() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { void customerService.getCustomers().then(list => setCustomers(list.filter(c => !c.isWalkIn))) }, [])
-  const invoices = useMemo(() => customerId ? getOutstandingInvoices(customerId) : [], [customerId])
+  const [invoices, setInvoices] = useState<OutstandingInvoice[]>([])
+  useEffect(() => {
+    if (!customerId) {
+      setInvoices([])
+      return
+    }
+    let active = true
+    void fetchOutstandingInvoices(customerId).then(list => {
+      if (active) setInvoices(list)
+    })
+    return () => { active = false }
+  }, [customerId])
   const filteredCustomers = useMemo(() => customers.filter(c => !customerSearch || [c.name, c.customerCode, c.phone].some(value => value?.toLowerCase().includes(customerSearch.toLowerCase()))), [customers, customerSearch])
   const selectedCustomer = customers.find(c => c.id === customerId)
   const summary = customerId ? getCustomerLedgerSummary(customerId) : undefined
@@ -53,7 +64,7 @@ export function ReceivePaymentPage() {
     if (Math.abs(methodTotal - total) > 0.01) { setError('Payment method amounts must equal the total received.'); return }
     if (allocated > total + 0.001) { setError('Invoice allocations cannot exceed the payment amount.'); return }
     if (advance > 0.009 && !keepAsAdvance) { setError('Confirm that the unallocated amount should remain as customer advance.'); return }
-    const allocationDraft = invoices.filter(i => (Number(allocations[i.saleId]) || 0) > 0).map(i => ({ saleId: i.saleId, invoiceNumber: i.invoiceNumber, amount: Number(allocations[i.saleId]) }))
+    const allocationDraft = invoices.filter(i => (Number(allocations[i.invoiceId || i.saleId]) || 0) > 0).map(i => ({ invoiceId: i.invoiceId, saleId: i.saleId, invoiceNumber: i.invoiceNumber, amount: Number(allocations[i.invoiceId || i.saleId]) }))
     const confirmation = `Customer: ${selectedCustomer?.name}\nReceived: ${formatCurrency(total)}\nAllocated: ${formatCurrency(allocated)}\n${advance > 0 ? `Held as advance: ${formatCurrency(advance)}\n` : ''}Continue and create this immutable payment receipt?`
     if (!window.confirm(confirmation)) return
     setSaving(true)
@@ -74,7 +85,7 @@ export function ReceivePaymentPage() {
           <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-medium">Payment methods</h3><Button type="button" onClick={() => setMethodRows(rows => [...rows, { method: 'cash', amount: '', reference: '' }])}>Add method</Button></div><div className="space-y-2">{methodRows.map((row, index) => <div key={index} className="grid gap-2 sm:grid-cols-[1fr_9rem_1fr_auto]"><select aria-label={`Payment method ${index + 1}`} className="rounded-lg border border-slate-200 p-2 text-sm" value={row.method} onChange={e => updateMethod(index, { method: e.target.value as PaymentMethod })}>{methods.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select><input aria-label={`Amount by method ${index + 1}`} required type="number" min="0.01" step="0.01" placeholder="Amount" className="rounded-lg border border-slate-200 p-2 text-sm" value={row.amount} onChange={e => updateMethod(index, { amount: e.target.value })} /><input aria-label={`Transaction reference ${index + 1}`} className="rounded-lg border border-slate-200 p-2 text-sm" value={row.reference} onChange={e => updateMethod(index, { reference: e.target.value })} placeholder="Reference (optional)" /><Button type="button" disabled={methodRows.length === 1} onClick={() => setMethodRows(rows => rows.filter((_, i) => i !== index))}>Remove</Button></div>)}</div><p className={`mt-2 text-xs ${Math.abs(methodTotal - total) > 0.01 ? 'text-rose-600' : 'text-emerald-700'}`}>Method total: {formatCurrency(methodTotal)} / {formatCurrency(total)}</p></div>
           <label className="block text-sm">Notes<textarea rows={3} className="mt-1 w-full rounded-lg border border-slate-200 p-2.5" value={notes} onChange={e => setNotes(e.target.value)} /></label>
         </Card>
-        <Card className="min-w-0 overflow-hidden p-5"><h2 className="font-semibold">Allocate to outstanding invoices</h2><p className="mt-1 text-xs text-slate-500">Each invoice is listed once. Enter an allocation up to its remaining balance.</p>{!customerId ? <p className="py-6 text-sm text-slate-500">Select a customer to view outstanding invoices.</p> : invoices.length === 0 ? <p className="py-6 text-sm text-slate-500">No outstanding invoices. The payment can be received as an advance.</p> : <div className="mt-4 space-y-3">{invoices.map(i => <div key={i.saleId} className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_auto_9rem] sm:items-center"><div><Link to={`/invoices/${i.saleId}`} className="text-sm font-semibold text-blue-600">{i.invoiceNumber}</Link><p className="text-xs text-slate-500">{new Date(i.date).toLocaleDateString()} · Invoice total {formatCurrency(i.totalAmount)} · Paid {formatCurrency(i.amountPaid)}</p></div><p className="text-sm">Remaining <strong>{formatCurrency(i.outstanding)}</strong></p><input aria-label={`Allocate to ${i.invoiceNumber}`} type="number" min="0" max={i.outstanding} step="0.01" placeholder="Allocation" className="min-w-0 rounded-lg border border-slate-200 p-2 text-sm" value={allocations[i.saleId] ?? ''} onChange={e => setAllocations(current => ({ ...current, [i.saleId]: e.target.value }))} /></div>)}</div>}</Card>
+        <Card className="min-w-0 overflow-hidden p-5"><h2 className="font-semibold">Allocate to outstanding invoices</h2><p className="mt-1 text-xs text-slate-500">Each invoice is listed once. Enter an allocation up to its remaining balance.</p>{!customerId ? <p className="py-6 text-sm text-slate-500">Select a customer to view outstanding invoices.</p> : invoices.length === 0 ? <p className="py-6 text-sm text-slate-500">No outstanding invoices. The payment can be received as an advance.</p> : <div className="mt-4 space-y-3">{invoices.map(i => <div key={i.invoiceId || i.saleId} className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_auto_9rem] sm:items-center"><div><Link to={`/invoices/${i.saleId}`} className="text-sm font-semibold text-blue-600">{i.invoiceNumber}</Link><p className="text-xs text-slate-500">{new Date(i.date).toLocaleDateString()} · Invoice total {formatCurrency(i.totalAmount)} · Paid {formatCurrency(i.amountPaid)}</p></div><p className="text-sm">Remaining <strong>{formatCurrency(i.outstanding)}</strong></p><input aria-label={`Allocate to ${i.invoiceNumber}`} type="number" min="0" max={i.outstanding} step="0.01" placeholder="Allocation" className="min-w-0 rounded-lg border border-slate-200 p-2 text-sm" value={allocations[i.invoiceId || i.saleId] ?? ''} onChange={e => setAllocations(current => ({ ...current, [i.invoiceId || i.saleId]: e.target.value }))} /></div>)}</div>}</Card>
       </div>
       <div className="space-y-5"><Card className="space-y-3 p-5"><h2 className="font-semibold">Payment summary</h2><div className="flex justify-between text-sm"><span>Total received</span><strong>{formatCurrency(total)}</strong></div><div className="flex justify-between text-sm"><span>Total allocated</span><strong>{formatCurrency(allocated)}</strong></div><div className="flex justify-between border-t pt-3 text-sm"><span>Remaining unallocated</span><strong>{formatCurrency(advance)}</strong></div><div className="flex justify-between text-xs text-slate-600"><span>Outstanding before payment</span><span>{formatCurrency(summary?.outstandingBalance ?? 0)}</span></div><div className="flex justify-between text-xs text-slate-600"><span>Expected invoice outstanding after</span><span>{formatCurrency(Math.max(0, (summary?.outstandingBalance ?? 0) - allocated))}</span></div>{advance > 0.009 && <label className="flex gap-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-900"><input type="checkbox" checked={keepAsAdvance} onChange={e => setKeepAsAdvance(e.target.checked)} /> Keep the unallocated {formatCurrency(advance)} as a customer advance.</label>}</Card>{error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}<div className="flex justify-end gap-2"><Link to="/payments"><Button>Cancel</Button></Link><Button type="submit" variant="primary" disabled={saving || !customerId || total <= 0 || Math.abs(methodTotal - total) > 0.01 || allocated > total + 0.001 || (advance > 0.009 && !keepAsAdvance)}>{saving ? 'Saving…' : 'Record payment'}</Button></div></div>
     </form></>

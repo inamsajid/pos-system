@@ -78,11 +78,16 @@ export class SupplierPaymentsService {
     currentBranchId: string | null,
     userId: string,
     input: CreateSupplierPaymentInput,
-    idempotencyKey?: string | null
+    idempotencyKey?: string | null,
+    authorizedBranchIds?: string[]
   ): Promise<SupplierPaymentDTO> {
     const branchId = input.branchId || currentBranchId
     if (!branchId) {
       throw HttpError.badRequest('Branch context or branchId is required.', { field: 'branchId' })
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(branchId)) {
+      throw HttpError.forbidden('You are not authorized to disburse supplier payments from this branch.')
     }
 
     // 1. Idempotency Check
@@ -138,6 +143,10 @@ export class SupplierPaymentsService {
 
         if (!purchase) {
           throw HttpError.notFound(`Purchase ${alloc.purchaseId} not found.`)
+        }
+
+        if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+          throw HttpError.forbidden('You are not authorized to allocate payments to purchases in this branch.')
         }
 
         if (purchase.supplier_id !== supplier.id) {
@@ -216,6 +225,9 @@ export class SupplierPaymentsService {
     const statements: D1PreparedStatement[] = []
 
     // 5. Insert into supplier_payments
+    const primaryMethod = input.paymentMethods?.[0]?.method || input.method || 'cash'
+    const primaryReference = input.paymentMethods?.[0]?.reference ?? input.reference ?? null
+
     statements.push(
       this.db
         .prepare(
@@ -235,13 +247,29 @@ export class SupplierPaymentsService {
           JSON.stringify(supplierSnapshot),
           input.amountMinor,
           unallocatedAmount,
-          input.method,
-          input.reference || null,
+          primaryMethod,
+          primaryReference,
           input.notes || null,
           businessDateKey,
           userId
         )
     )
+
+    // 5b. Insert split payment methods into supplier_payment_methods
+    const methodList = input.paymentMethods && input.paymentMethods.length > 0
+      ? input.paymentMethods
+      : [{ method: primaryMethod, amountMinor: input.amountMinor, reference: primaryReference }]
+
+    for (const pm of methodList) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO supplier_payment_methods (id, payment_id, method, amount_minor, reference)
+             VALUES (?, ?, ?, ?, ?)`
+          )
+          .bind(`spm_${crypto.randomUUID()}`, paymentId, pm.method, pm.amountMinor, pm.reference || null)
+      )
+    }
 
     // 6. Insert Allocations & Update Purchases
     const allocationDTOs: SupplierPaymentAllocationDTO[] = []
@@ -337,6 +365,14 @@ export class SupplierPaymentsService {
         )
     )
 
+    const paymentMethodsDTO: SupplierPaymentDTO['paymentMethods'] = methodList.map((pm) => ({
+      id: `spm_${crypto.randomUUID()}`,
+      paymentId,
+      method: pm.method,
+      amountMinor: pm.amountMinor,
+      reference: pm.reference || null,
+    }))
+
     const resultDTO: SupplierPaymentDTO = {
       id: paymentId,
       businessId,
@@ -347,8 +383,9 @@ export class SupplierPaymentsService {
       supplierSnapshot,
       amountMinor: input.amountMinor,
       unallocatedAmountMinor: unallocatedAmount,
-      method: input.method,
-      reference: input.reference || null,
+      method: primaryMethod,
+      reference: primaryReference,
+      paymentMethods: paymentMethodsDTO,
       notes: input.notes || null,
       businessDateKey,
       paidBy: userId,
@@ -383,7 +420,8 @@ export class SupplierPaymentsService {
     paymentId: string,
     operatorId: string,
     input: AllocateSupplierAdvanceInput,
-    idempotencyKey?: string | null
+    idempotencyKey?: string | null,
+    authorizedBranchIds?: string[]
   ): Promise<SupplierPaymentDTO> {
     const payment = await this.db
       .prepare('SELECT * FROM supplier_payments WHERE business_id = ? AND id = ? LIMIT 1')
@@ -400,6 +438,10 @@ export class SupplierPaymentsService {
 
     if (!payment) {
       throw HttpError.notFound('Supplier payment not found.')
+    }
+
+    if (authorizedBranchIds && !authorizedBranchIds.includes(payment.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to allocate supplier payments in this branch.')
     }
 
     if (payment.unallocated_amount_minor <= 0) {
@@ -439,6 +481,10 @@ export class SupplierPaymentsService {
 
       if (!purchase) {
         throw HttpError.notFound(`Purchase ${alloc.purchaseId} not found.`)
+      }
+
+      if (authorizedBranchIds && !authorizedBranchIds.includes(purchase.branch_id)) {
+        throw HttpError.forbidden('You are not authorized to allocate payments to purchases in this branch.')
       }
 
       if (purchase.supplier_id !== payment.supplier_id) {

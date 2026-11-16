@@ -51,7 +51,11 @@ export function StaffDetailsPage() {
       .then((res) => {
         if (Array.isArray(res)) setBranches(res)
       })
-      .catch(() => {})
+      .catch((err) => {
+        setActionError((prev) =>
+          prev || (err instanceof Error ? err.message : 'Unable to load branch list.')
+        )
+      })
   }, [id])
 
   const handleToggleSuspend = async () => {

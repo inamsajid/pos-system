@@ -55,6 +55,108 @@ export class ChangeLogRepository {
   }
 
   /**
+   * Generates a prepared statement to append an authoritative branch stock event to `sync_change_log`,
+   * reading the live post-mutation `quantity_on_hand` inside the same SQL transaction so concurrent
+   * writers never emit stale JS-cached balances.
+   */
+  createLiveStockChangeEventStatement(params: {
+    businessId: string
+    branchId: string
+    productId: string
+    resourceId?: string
+    resourceVersion?: number
+    unit?: string | null
+    updatedAt: string
+    eventId: string
+    extraPayload?: {
+      quantityDeducted?: number
+      reason?: string
+    }
+  }): D1PreparedStatement {
+    const {
+      businessId,
+      branchId,
+      productId,
+      resourceId = `${branchId}:${productId}`,
+      resourceVersion = 0,
+      unit = 'piece',
+      updatedAt,
+      eventId,
+      extraPayload,
+    } = params
+
+    if (extraPayload && extraPayload.quantityDeducted !== undefined && extraPayload.reason) {
+      return this.db
+        .prepare(
+          `INSERT INTO sync_change_log (
+             business_id, branch_id, resource_type, resource_id, resource_version, operation, payload, event_id, created_at
+           ) VALUES (
+             ?, ?, 'stock', ?, ?, 'upsert',
+             json_object(
+               'productId', ?,
+               'branchId', ?,
+               'quantityDeducted', ?,
+               'quantityOnHand', COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+               'unit', ?,
+               'reason', ?,
+               'updatedAt', ?
+             ),
+             ?,
+             datetime('now')
+           )`
+        )
+        .bind(
+          businessId,
+          branchId,
+          resourceId,
+          resourceVersion,
+          productId,
+          branchId,
+          extraPayload.quantityDeducted,
+          businessId,
+          branchId,
+          productId,
+          unit || 'piece',
+          extraPayload.reason,
+          updatedAt,
+          eventId
+        )
+    }
+
+    return this.db
+      .prepare(
+        `INSERT INTO sync_change_log (
+           business_id, branch_id, resource_type, resource_id, resource_version, operation, payload, event_id, created_at
+         ) VALUES (
+           ?, ?, 'stock', ?, ?, 'upsert',
+           json_object(
+             'productId', ?,
+             'branchId', ?,
+             'quantityOnHand', COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+             'unit', ?,
+             'updatedAt', ?
+           ),
+           ?,
+           datetime('now')
+         )`
+      )
+      .bind(
+        businessId,
+        branchId,
+        resourceId,
+        resourceVersion,
+        productId,
+        branchId,
+        businessId,
+        branchId,
+        productId,
+        unit || 'piece',
+        updatedAt,
+        eventId
+      )
+  }
+
+  /**
    * Retrieves change log rows after sequence `afterSeq` ordered monotonically by ID.
    * Scopes to business and either business-wide changes (branch_id IS NULL) or branch-specific changes.
    */

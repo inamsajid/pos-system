@@ -36,7 +36,7 @@ export async function getOrCreateDeviceId(db: Dexie): Promise<string> {
     await table.put(record)
     cachedDeviceId = newId
     return newId
-  } catch (err) {
+  } catch {
     // Fallback in case of storage failure or SSR
     const fallbackId = `dev_ephemeral_${crypto.randomUUID()}`
     cachedDeviceId = fallbackId

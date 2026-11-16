@@ -14,6 +14,7 @@ import { validateCreateSaleInput, parseSaleQueryParams } from './sales.validatio
 export async function handleListSales(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseSaleQueryParams(ctx.url)
@@ -40,6 +41,7 @@ export async function handleListSales(ctx: RequestContext): Promise<Response> {
 export async function handleGetSale(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const saleId = ctx.params.id
@@ -86,7 +88,8 @@ export async function handleCreateSale(ctx: RequestContext): Promise<Response> {
     ctx.auth!.user.id,
     ctx.auth!.user.name || 'Cashier',
     input,
-    idempotencyKey
+    idempotencyKey,
+    ctx.tenant!.membership.role
   )
 
   return jsonResponse(sale, 201, ctx.requestId)
@@ -95,9 +98,18 @@ export async function handleCreateSale(ctx: RequestContext): Promise<Response> {
 export async function handleVoidSale(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('void_sale')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const saleId = ctx.params.id
+
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
 
   let reason = 'Sale voided by supervisor'
   try {
@@ -115,7 +127,8 @@ export async function handleVoidSale(ctx: RequestContext): Promise<Response> {
     saleId,
     ctx.auth!.user.id,
     ctx.tenant!.membership.role,
-    reason
+    reason,
+    authorizedBranchIds
   )
 
   return jsonResponse(voided, 200, ctx.requestId)
@@ -124,6 +137,7 @@ export async function handleVoidSale(ctx: RequestContext): Promise<Response> {
 export async function handleGetSaleInvoice(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('sales_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const saleId = ctx.params.id

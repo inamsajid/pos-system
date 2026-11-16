@@ -4,6 +4,7 @@ export { computePayloadHash }
 import { CommandRegistry, commandRegistry } from './outbox.registry'
 import { outboxEventBus } from './outbox.events'
 import { OutboxValidationError, OutboxConflictError } from './outbox.errors'
+import { OfflineSalesRepository } from '../sales/offlineSales.repository'
 import type {
   EnqueueCommandInput,
   OutboxCommandRecord,
@@ -16,6 +17,7 @@ export class OutboxService {
   private readonly repo: OutboxRepository
   private readonly dispatcher: OutboxDispatcher
   private readonly registry: CommandRegistry
+  private readonly salesRepo: OfflineSalesRepository
 
   constructor(
     repo: OutboxRepository = outboxRepository,
@@ -25,6 +27,7 @@ export class OutboxService {
     this.repo = repo
     this.dispatcher = dispatcher
     this.registry = registry
+    this.salesRepo = new OfflineSalesRepository(this.repo.getDb())
   }
 
   /**
@@ -120,6 +123,26 @@ export class OutboxService {
     })
   }
 
+  async listCommands(userId: string, businessId: string): Promise<OutboxCommandRecord[]> {
+    return this.repo.listByTenant(userId, businessId)
+  }
+
+  /**
+   * Re-queues blocked_auth commands when the original user signs back in.
+   */
+  async resumeAuthBlocked(userId: string, businessId?: string): Promise<number> {
+    const resumed = await this.repo.resumeAuthBlocked(userId, businessId)
+    if (resumed > 0 && businessId) {
+      const stats = await this.repo.getStats(userId, businessId)
+      outboxEventBus.emit({
+        type: 'OUTBOX_STATS_UPDATED',
+        stats,
+        timestamp: new Date().toISOString(),
+      })
+    }
+    return resumed
+  }
+
   /**
    * Returns current outbox metrics and health stats.
    */
@@ -136,7 +159,7 @@ export class OutboxService {
   }
 
   /**
-   * Cancels a command, moving it to terminal 'cancelled' state.
+   * Cancels a command, moving it to terminal 'cancelled' state and rolling back local quota if applicable.
    */
   async cancelCommand(commandId: string): Promise<OutboxCommandRecord> {
     const existing = await this.repo.findById(commandId)
@@ -145,6 +168,14 @@ export class OutboxService {
     }
     if (['acknowledged', 'cancelled'].includes(existing.status)) {
       throw new OutboxConflictError(`Cannot cancel command in '${existing.status}' status.`)
+    }
+
+    if (typeof existing.payload?.provisionalSaleId === 'string') {
+      await this.salesRepo.rollbackSaleQuota(
+        existing.payload.provisionalSaleId,
+        'rejected',
+        'Cancelled prior to server synchronization.'
+      )
     }
 
     const nowIso = new Date().toISOString()

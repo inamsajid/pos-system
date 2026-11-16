@@ -28,7 +28,7 @@ export async function fetchDashboardReports() {
 
 export async function downloadReportCsv(type: string, params: Record<string, string | number | undefined> = {}) {
   if (!isExplicitDemo()) {
-    const blob = await apiClient.getBlob('/reports/export/csv', { params: { type, ...params } })
+    const blob = await apiClient.getBlob('/reports/export', { params: { reportType: type, ...params } })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url

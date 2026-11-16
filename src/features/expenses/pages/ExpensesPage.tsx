@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { Plus, Download, Tag } from 'lucide-react'
+import { Plus, Download, Tag, AlertCircle } from 'lucide-react'
 import { PageHeader } from '../../../components/common/PageHeader'
 import { Button } from '../../../components/ui/Button'
+import { hasPermission } from '../../../lib/permissions'
+import { useOptionalAuth } from '../../auth/context/useAuth'
 import type { Expense, ExpenseFilterParams } from '../types/expense.types'
 import { useExpenses, useExpenseSummary } from '../hooks/useExpenses'
 import { useExpenseCategories } from '../hooks/useExpenseCategories'
@@ -15,6 +17,16 @@ import { ManageCategoriesModal } from '../components/ManageCategoriesModal'
 import { ExpenseDetailsModal } from '../components/ExpenseDetailsModal'
 
 export function ExpensesPage() {
+  const auth = useOptionalAuth()
+  const canWrite =
+    auth?.status === 'authenticated'
+      ? hasPermission(auth.activeBusiness?.role, 'expenses_write')
+      : true
+  const canVoid =
+    auth?.status === 'authenticated'
+      ? hasPermission(auth.activeBusiness?.role, 'expenses_write')
+      : false
+
   // Filters state
   const [filters, setFilters] = useState<ExpenseFilterParams>({
     page: 1,
@@ -29,13 +41,40 @@ export function ExpensesPage() {
   const [voidOpen, setVoidOpen] = useState(false)
 
   // TanStack Query Hooks
-  const { expenses, total, totalPages, page, limit, isLoading, refetch } = useExpenses(filters)
-  const { data: summary, isLoading: isSummaryLoading, refetch: refetchSummary } = useExpenseSummary()
-  const { categories, activeCategories, refetch: refetchCategories } = useExpenseCategories()
+  const {
+    expenses,
+    total,
+    totalPages,
+    page,
+    limit,
+    isLoading,
+    isError: expensesIsError,
+    error: expensesError,
+    refetch,
+  } = useExpenses(filters)
+  const {
+    data: summary,
+    isLoading: isSummaryLoading,
+    isError: summaryIsError,
+    error: summaryError,
+    refetch: refetchSummary,
+  } = useExpenseSummary()
+  const {
+    categories,
+    activeCategories,
+    isError: categoriesIsError,
+    error: categoriesError,
+    refetch: refetchCategories,
+  } = useExpenseCategories()
 
   const refreshAll = async () => {
     await Promise.all([refetch(), refetchSummary(), refetchCategories()])
   }
+
+  const hasLoadError = expensesIsError || summaryIsError || categoriesIsError
+  const loadError = expensesError || summaryError || categoriesError
+  const loadErrorMessage =
+    loadError instanceof Error ? loadError.message : 'Unable to load expenses from server.'
 
   const handleExportCsv = () => {
     const headers = [
@@ -55,7 +94,7 @@ export function ExpensesPage() {
       e.businessDateKey,
       e.categoryName || 'General',
       e.title,
-      e.branchName || 'Main',
+      e.branchName || e.branchId || '—',
       e.paymentMethod,
       String(e.amount),
       e.status,
@@ -88,14 +127,16 @@ export function ExpensesPage() {
         description="Record, categorize and audit operating expenditures across business branches."
         action={
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => setCategoriesOpen(true)}
-              className="flex items-center gap-1.5"
-            >
-              <Tag size={15} />
-              Categories
-            </Button>
+            {canWrite && (
+              <Button
+                variant="secondary"
+                onClick={() => setCategoriesOpen(true)}
+                className="flex items-center gap-1.5"
+              >
+                <Tag size={15} />
+                Categories
+              </Button>
+            )}
             <Button
               variant="secondary"
               onClick={handleExportCsv}
@@ -104,17 +145,34 @@ export function ExpensesPage() {
               <Download size={15} />
               Export CSV
             </Button>
-            <Button
-              variant="primary"
-              onClick={() => setCreateOpen(true)}
-              className="flex items-center gap-1.5"
-            >
-              <Plus size={15} />
-              Record Expense
-            </Button>
+            {canWrite && (
+              <Button
+                variant="primary"
+                onClick={() => setCreateOpen(true)}
+                className="flex items-center gap-1.5"
+              >
+                <Plus size={15} />
+                Record Expense
+              </Button>
+            )}
           </div>
         }
       />
+
+      {hasLoadError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+            <span>{loadErrorMessage}</span>
+          </div>
+          <Button variant="secondary" onClick={() => void refreshAll()}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       {/* KPI Metric Cards */}
       <ExpenseSummary summary={summary} isLoading={isSummaryLoading} />
@@ -138,8 +196,14 @@ export function ExpensesPage() {
           setSelectedExpense(exp)
           setVoidOpen(true)
         }}
-        canVoid={true}
-        emptyMessage={isLoading ? 'Loading expenses…' : 'No expenses match the current criteria.'}
+        canVoid={canVoid}
+        emptyMessage={
+          isLoading
+            ? 'Loading expenses…'
+            : expensesIsError
+              ? 'Unable to load expenses. Please retry.'
+              : 'No expenses match the current criteria.'
+        }
       />
 
       {/* Pagination */}

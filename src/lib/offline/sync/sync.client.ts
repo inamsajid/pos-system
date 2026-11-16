@@ -242,18 +242,31 @@ export class SyncClient {
               }
             } else if (change.resourceType === 'stock') {
               const stockBranchId = change.branchId || branchId || 'default'
+              const productId = change.resourceId.includes(':')
+                ? change.resourceId.split(':')[1]
+                : change.resourceId
               const stockKey = buildStockKey(
                 userId,
                 businessId,
                 stockBranchId,
                 activeSnapshotId,
-                change.resourceId.includes(':') ? change.resourceId.split(':')[1] : change.resourceId
+                productId
               )
-              const productId = change.resourceId.includes(':')
-                ? change.resourceId.split(':')[1]
-                : change.resourceId
 
               const payload = (change.payload || change.data || {}) as Record<string, unknown>
+              const rawQty = payload.quantityOnHand
+              const hasAuthoritativeQty =
+                (typeof rawQty === 'number' && Number.isFinite(rawQty)) ||
+                (typeof rawQty === 'string' && rawQty.trim() !== '' && Number.isFinite(Number(rawQty)))
+
+              if (!hasAuthoritativeQty) {
+                console.warn(
+                  `[SyncClient] Ignoring stock change event for ${productId} (${stockBranchId}) without authoritative quantityOnHand to prevent zeroing local balance.`
+                )
+                continue
+              }
+
+              const existing = await this.db.cachedBranchStock.get(stockKey)
               const stockRec: CachedBranchStockRecord = {
                 id: stockKey,
                 userId,
@@ -261,9 +274,9 @@ export class SyncClient {
                 branchId: stockBranchId,
                 snapshotId: activeSnapshotId,
                 productId,
-                quantityOnHand: Number(payload.quantityOnHand ?? 0),
-                unit: String(payload.unit || 'piece'),
-                reorderThreshold: null,
+                quantityOnHand: Number(rawQty),
+                unit: String(payload.unit || existing?.unit || 'piece'),
+                reorderThreshold: existing?.reorderThreshold ?? null,
                 serverUpdatedAt: String(payload.updatedAt || change.createdAt),
                 cachedAt: now,
               }

@@ -42,27 +42,27 @@ export class ReportsService {
   }
 
   /**
-   * Resolves authorized branch scope.
+   * Resolves authorized branch scope (fail closed when empty, multi-branch explicit list).
    */
   private resolveBranchScope(
     authorizedBranchIds: string[],
     requestedBranchId?: string | null
-  ): string | null {
+  ): { displayBranchId: string | null; branchIds: string[] } {
     if (requestedBranchId) {
       if (!authorizedBranchIds.includes(requestedBranchId)) {
         throw HttpError.forbidden(
           `Access denied: branch '${requestedBranchId}' is not in authorized branches`
         )
       }
-      return requestedBranchId
+      return { displayBranchId: requestedBranchId, branchIds: [requestedBranchId] }
     }
 
     // If restricted to a single branch, return that branch
     if (authorizedBranchIds.length === 1) {
-      return authorizedBranchIds[0]
+      return { displayBranchId: authorizedBranchIds[0], branchIds: [authorizedBranchIds[0]] }
     }
 
-    return null
+    return { displayBranchId: null, branchIds: [...authorizedBranchIds] }
   }
 
   /**
@@ -79,17 +79,22 @@ export class ReportsService {
   ): Promise<DashboardReportDTO> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { displayBranchId, branchIds } = this.resolveBranchScope(
+      authorizedBranchIds,
+      requestedBranchId
+    )
 
-    const [sales, cogsMinor, collections, purchases, inventory] = await Promise.all([
-      this.repository.getDashboardSalesMetrics(env.DB, businessId, branchId, fromDate, toDate),
-      this.repository.getDashboardCogsMinor(env.DB, businessId, branchId, fromDate, toDate),
-      this.repository.getDashboardCollectionsMetrics(env.DB, businessId, branchId, fromDate, toDate),
-      this.repository.getDashboardPurchasesMetrics(env.DB, businessId, branchId, fromDate, toDate),
-      this.repository.getDashboardInventoryMetrics(env.DB, businessId, branchId),
+    const [sales, cogsMinor, collections, purchases, inventory, expensesMinor] = await Promise.all([
+      this.repository.getDashboardSalesMetrics(env.DB, businessId, branchIds, fromDate, toDate),
+      this.repository.getDashboardCogsMinor(env.DB, businessId, branchIds, fromDate, toDate),
+      this.repository.getDashboardCollectionsMetrics(env.DB, businessId, branchIds, fromDate, toDate),
+      this.repository.getDashboardPurchasesMetrics(env.DB, businessId, branchIds, fromDate, toDate),
+      this.repository.getDashboardInventoryMetrics(env.DB, businessId, branchIds),
+      this.repository.getDashboardExpensesMinor(env.DB, businessId, branchIds, fromDate, toDate),
     ])
 
     const grossProfitMinor = sales.netSalesMinor - cogsMinor
+    const netProfitMinor = grossProfitMinor - expensesMinor
 
     return {
       businessDateRange: {
@@ -97,7 +102,7 @@ export class ReportsService {
         toDate,
         timezone: BUSINESS_TIMEZONE,
       },
-      branchId,
+      branchId: displayBranchId,
       sales,
       collections,
       purchases,
@@ -110,12 +115,16 @@ export class ReportsService {
         },
         grossProfitMinor,
         expenses: {
-          isAvailable: false,
-          reason: 'Expenses module is not yet implemented',
+          isAvailable: true,
+          data: {
+            totalExpensesMinor: expensesMinor,
+          },
         },
         netProfit: {
-          isAvailable: false,
-          reason: 'Requires expense tracking which is not yet implemented',
+          isAvailable: true,
+          data: {
+            netProfitMinor,
+          },
         },
       },
     }
@@ -135,14 +144,18 @@ export class ReportsService {
   ): Promise<SalesSummaryDTO> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { displayBranchId, branchIds } = this.resolveBranchScope(
+      authorizedBranchIds,
+      requestedBranchId
+    )
 
     return this.repository.getSalesSummary(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
-      toDate
+      toDate,
+      displayBranchId
     )
   }
 
@@ -161,12 +174,12 @@ export class ReportsService {
   ): Promise<SalesTrendPoint[]> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getSalesTrends(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate,
       interval
@@ -189,12 +202,12 @@ export class ReportsService {
   ): Promise<SalesByProductItem[]> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getSalesByProduct(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate,
       Math.min(Math.max(limit, 1), 100),
@@ -216,12 +229,12 @@ export class ReportsService {
   ): Promise<SalesByCategoryItem[]> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getSalesByCategory(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate
     )
@@ -241,14 +254,18 @@ export class ReportsService {
   ): Promise<PaymentsSummaryDTO> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { displayBranchId, branchIds } = this.resolveBranchScope(
+      authorizedBranchIds,
+      requestedBranchId
+    )
 
     return this.repository.getPaymentsSummary(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
-      toDate
+      toDate,
+      displayBranchId
     )
   }
 
@@ -266,12 +283,12 @@ export class ReportsService {
   ): Promise<PaymentByMethodItem[]> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getPaymentsByMethod(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate
     )
@@ -291,14 +308,18 @@ export class ReportsService {
   ): Promise<PurchasesSummaryDTO> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { displayBranchId, branchIds } = this.resolveBranchScope(
+      authorizedBranchIds,
+      requestedBranchId
+    )
 
     return this.repository.getPurchasesSummary(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
-      toDate
+      toDate,
+      displayBranchId
     )
   }
 
@@ -317,12 +338,12 @@ export class ReportsService {
   ): Promise<PurchasesTrendPoint[]> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getPurchasesTrends(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate,
       interval
@@ -335,10 +356,13 @@ export class ReportsService {
   async getSupplierPayables(
     env: Env,
     businessId: string,
-    role: MemberRole
+    role: MemberRole,
+    authorizedBranchIds: string[] = [],
+    requestedBranchId?: string | null
   ): Promise<SupplierPayableItem[]> {
     this.assertReportsPermission(role)
-    return this.repository.getSupplierPayables(env.DB, businessId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    return this.repository.getSupplierPayables(env.DB, businessId, branchIds)
   }
 
   /**
@@ -352,8 +376,11 @@ export class ReportsService {
     requestedBranchId?: string | null
   ): Promise<InventorySummaryDTO> {
     this.assertReportsPermission(role)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
-    return this.repository.getInventorySummary(env.DB, businessId, branchId)
+    const { displayBranchId, branchIds } = this.resolveBranchScope(
+      authorizedBranchIds,
+      requestedBranchId
+    )
+    return this.repository.getInventorySummary(env.DB, businessId, branchIds, displayBranchId)
   }
 
   /**
@@ -374,12 +401,12 @@ export class ReportsService {
   ): Promise<{ items: InventoryMovementItem[]; total: number }> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getInventoryMovements(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       fromDate,
       toDate,
       productId,
@@ -402,12 +429,12 @@ export class ReportsService {
     offset = 0
   ): Promise<{ items: LowStockProductItem[]; total: number }> {
     this.assertReportsPermission(role)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     return this.repository.getLowStockProducts(
       env.DB,
       businessId,
-      branchId,
+      branchIds,
       Math.min(Math.max(limit, 1), 100),
       Math.max(offset, 0)
     )
@@ -424,9 +451,9 @@ export class ReportsService {
     requestedBranchId?: string | null
   ): Promise<InventoryValuationItem[]> {
     this.assertReportsPermission(role)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
-    return this.repository.getInventoryValuation(env.DB, businessId, branchId)
+    return this.repository.getInventoryValuation(env.DB, businessId, branchIds)
   }
 
   /**
@@ -435,10 +462,13 @@ export class ReportsService {
   async getCustomerReceivables(
     env: Env,
     businessId: string,
-    role: MemberRole
+    role: MemberRole,
+    authorizedBranchIds: string[] = [],
+    requestedBranchId?: string | null
   ): Promise<CustomerReceivableItem[]> {
     this.assertReportsPermission(role)
-    return this.repository.getCustomerReceivables(env.DB, businessId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    return this.repository.getCustomerReceivables(env.DB, businessId, branchIds)
   }
 
   /**
@@ -456,7 +486,7 @@ export class ReportsService {
   ): Promise<{ csvContent: string; filename: string; rowCount: number }> {
     this.assertReportsPermission(role)
     const { fromDate, toDate } = validateReportDateRange(rawFromDate, rawToDate)
-    const branchId = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
+    const { branchIds } = this.resolveBranchScope(authorizedBranchIds, requestedBranchId)
 
     let headers: string[] = []
     let rows: (string | number | null | undefined)[][] = []
@@ -476,7 +506,7 @@ export class ReportsService {
         const trends = await this.repository.getSalesTrends(
           env.DB,
           businessId,
-          branchId,
+          branchIds,
           fromDate,
           toDate,
           'daily'
@@ -505,7 +535,7 @@ export class ReportsService {
         const products = await this.repository.getSalesByProduct(
           env.DB,
           businessId,
-          branchId,
+          branchIds,
           fromDate,
           toDate,
           100
@@ -526,7 +556,7 @@ export class ReportsService {
         const methods = await this.repository.getPaymentsByMethod(
           env.DB,
           businessId,
-          branchId,
+          branchIds,
           fromDate,
           toDate
         )
@@ -549,7 +579,7 @@ export class ReportsService {
         const valuation = await this.repository.getInventoryValuation(
           env.DB,
           businessId,
-          branchId
+          branchIds
         )
         rows = valuation.map((v) => [
           v.productName,
@@ -564,7 +594,8 @@ export class ReportsService {
         headers = ['Customer Name', 'Phone', 'Receivable Balance (Rs)', 'Unallocated Advance (Rs)']
         const customers = await this.repository.getCustomerReceivables(
           env.DB,
-          businessId
+          businessId,
+          branchIds
         )
         rows = customers.map((c) => [
           c.customerName,
@@ -578,7 +609,8 @@ export class ReportsService {
         headers = ['Supplier Name', 'Company', 'Phone', 'Payable Balance (Rs)', 'Unallocated Advance (Rs)']
         const suppliers = await this.repository.getSupplierPayables(
           env.DB,
-          businessId
+          businessId,
+          branchIds
         )
         rows = suppliers.map((s) => [
           s.supplierName,

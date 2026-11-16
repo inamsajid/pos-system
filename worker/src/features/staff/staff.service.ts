@@ -1,5 +1,7 @@
 import { HttpError } from '../../lib/errors'
 import { type MemberRole, ROLE_PERMISSIONS } from '../../auth/tenantContext'
+import { revokeAllUserSessions } from '../../auth/sessionService'
+import { sha256Hex, hashPassword, verifyPassword, generateId } from '../../auth/crypto'
 import { StaffRepository } from './staff.repository'
 import type {
   StaffMemberDTO,
@@ -12,10 +14,33 @@ import type {
 } from './staff.types'
 
 export class StaffService {
+  private readonly db: D1Database
   private readonly repo: StaffRepository
 
   constructor(db: D1Database) {
+    this.db = db
     this.repo = new StaffRepository(db)
+  }
+
+  private async validateBranchIdsForBusiness(
+    businessId: string,
+    branchIds: string[]
+  ): Promise<string[]> {
+    const uniqueBranchIds = [...new Set(branchIds.map((id) => id.trim()).filter(Boolean))]
+    if (uniqueBranchIds.length === 0) {
+      return []
+    }
+
+    const activeIds = new Set(await this.repo.findActiveBranchIds(businessId, uniqueBranchIds))
+    const invalidIds = uniqueBranchIds.filter((id) => !activeIds.has(id))
+    if (invalidIds.length > 0) {
+      throw HttpError.badRequest(
+        `One or more branchIds are invalid, inactive, or do not belong to this business: ${invalidIds.join(', ')}`,
+        { field: 'branchIds', invalidBranchIds: invalidIds }
+      )
+    }
+
+    return uniqueBranchIds
   }
 
   async listStaff(businessId: string, filters: StaffFilterParams = {}): Promise<StaffMemberDTO[]> {
@@ -74,8 +99,13 @@ export class StaffService {
       .map(b => b.toString(16).padStart(2, '0'))
       .join('')
 
+    const validatedBranchIds =
+      input.branchIds && input.branchIds.length > 0
+        ? await this.validateBranchIdsForBusiness(businessId, input.branchIds)
+        : []
+
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days
-    const branchIdsJson = input.branchIds && input.branchIds.length > 0 ? JSON.stringify(input.branchIds) : null
+    const branchIdsJson = validatedBranchIds.length > 0 ? JSON.stringify(validatedBranchIds) : null
 
     await this.repo.createInvitation(
       invitationId,
@@ -94,7 +124,7 @@ export class StaffService {
       'invite_staff',
       'staff_invitation',
       invitationId,
-      JSON.stringify({ email: input.email, role: input.role, branchIds: input.branchIds })
+      JSON.stringify({ email: input.email, role: input.role, branchIds: validatedBranchIds })
     )
 
     return {
@@ -102,7 +132,7 @@ export class StaffService {
       businessId,
       email: input.email,
       role: input.role,
-      branchIds: input.branchIds || [],
+      branchIds: validatedBranchIds,
       invitedBy: actorUserId,
       expiresAt,
       usedAt: null,
@@ -162,6 +192,19 @@ export class StaffService {
       )
     }
 
+    let branchIds: string[] = []
+    if (invitation.branch_ids_json) {
+      let parsed: unknown = null
+      try {
+        parsed = JSON.parse(invitation.branch_ids_json)
+      } catch {
+        parsed = null
+      }
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        branchIds = await this.validateBranchIdsForBusiness(invitation.business_id, parsed as string[])
+      }
+    }
+
     const memberId = `bm-${crypto.randomUUID()}`
     const finalMemberId = await this.repo.upsertBusinessMember(
       memberId,
@@ -170,14 +213,8 @@ export class StaffService {
       invitation.role
     )
 
-    // Assign branches if specified
-    if (invitation.branch_ids_json) {
-      try {
-        const branchIds = JSON.parse(invitation.branch_ids_json)
-        if (Array.isArray(branchIds) && branchIds.length > 0) {
-          await this.repo.updateMemberBranches(finalMemberId, branchIds)
-        }
-      } catch {}
+    if (branchIds.length > 0) {
+      await this.repo.updateMemberBranches(finalMemberId, branchIds)
     }
 
     await this.repo.markInvitationUsed(invitation.id)
@@ -195,6 +232,88 @@ export class StaffService {
       memberId: finalMemberId,
       businessId: invitation.business_id,
       role: invitation.role,
+    }
+  }
+
+  async getInvitationInfo(token: string): Promise<{
+    id: string
+    email: string
+    role: string
+    businessId: string
+    businessName: string
+    invitedByName: string | null
+    isExpired: boolean
+    isUsed: boolean
+  }> {
+    if (!token || !token.trim()) {
+      throw HttpError.badRequest('Invitation token is required.')
+    }
+    const tokenHash = await sha256Hex(token.trim())
+    const inv = await this.repo.getInvitationDetails(tokenHash)
+    if (!inv) {
+      throw HttpError.notFound('Invalid or non-existent invitation token.')
+    }
+    return {
+      id: inv.id,
+      email: inv.email,
+      role: inv.role,
+      businessId: inv.business_id,
+      businessName: inv.business_name || 'Northstar POS Store',
+      invitedByName: inv.invited_by_name || null,
+      isExpired: new Date(inv.expires_at).getTime() < Date.now(),
+      isUsed: Boolean(inv.used_at),
+    }
+  }
+
+  async registerAndAcceptInvitation(
+    token: string,
+    name: string,
+    password: string
+  ): Promise<{ userId: string; userEmail: string; memberId: string; businessId: string; role: string }> {
+    if (!token || !token.trim()) {
+      throw HttpError.badRequest('Invitation token is required.')
+    }
+    if (!name || name.trim().length < 2) {
+      throw HttpError.badRequest('Full name is required (minimum 2 characters).')
+    }
+    if (!password || password.length < 8) {
+      throw HttpError.badRequest('Password must be at least 8 characters.')
+    }
+
+    const tokenHash = await sha256Hex(token.trim())
+    const inv = await this.repo.getInvitationByTokenHash(tokenHash)
+    if (!inv) {
+      throw HttpError.notFound('Invalid or non-existent invitation token.')
+    }
+    if (inv.used_at) {
+      throw HttpError.badRequest('This invitation has already been accepted.')
+    }
+    if (new Date(inv.expires_at).getTime() < Date.now()) {
+      throw HttpError.badRequest('This invitation has expired.')
+    }
+
+    let existingUser = await this.repo.findUserByEmail(inv.email)
+    let userId: string
+
+    if (existingUser) {
+      const ok = await verifyPassword(password, existingUser.password_hash)
+      if (!ok) {
+        throw HttpError.conflict('An account with this email already exists. Please verify your password to accept.')
+      }
+      userId = existingUser.id
+    } else {
+      userId = generateId()
+      const passwordHash = await hashPassword(password)
+      await this.repo.createUser(userId, inv.email, name, passwordHash)
+    }
+
+    const result = await this.acceptInvitation(userId, inv.email, token)
+    return {
+      userId,
+      userEmail: inv.email,
+      memberId: result.memberId,
+      businessId: result.businessId,
+      role: result.role,
     }
   }
 
@@ -258,7 +377,8 @@ export class StaffService {
       throw HttpError.notFound('Staff member not found.')
     }
 
-    await this.repo.updateMemberBranches(targetMemberId, input.branchIds)
+    const validatedBranchIds = await this.validateBranchIdsForBusiness(businessId, input.branchIds)
+    await this.repo.updateMemberBranches(targetMemberId, validatedBranchIds)
 
     await this.repo.insertAuditLog(
       businessId,
@@ -266,7 +386,7 @@ export class StaffService {
       'update_staff_branches',
       'staff_member',
       targetMemberId,
-      JSON.stringify({ branchIds: input.branchIds })
+      JSON.stringify({ branchIds: validatedBranchIds })
     )
 
     const updated = await this.repo.getStaffMemberById(businessId, targetMemberId)
@@ -299,6 +419,7 @@ export class StaffService {
     }
 
     await this.repo.setMemberActiveStatus(businessId, targetMemberId, false)
+    await revokeAllUserSessions(this.db, target.userId)
 
     await this.repo.insertAuditLog(
       businessId,

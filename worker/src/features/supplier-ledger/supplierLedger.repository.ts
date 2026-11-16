@@ -79,14 +79,16 @@ export class SupplierLedgerRepository {
     const conditions: string[] = ['slt.business_id = ?', 'slt.supplier_id = ?']
     const bindings: (string | number)[] = [businessId, supplierId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('slt.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`slt.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -163,23 +165,35 @@ export class SupplierLedgerRepository {
   async getOpeningPayableBeforeDate(
     businessId: string,
     supplierId: string,
-    startDate?: string
+    startDate?: string,
+    authorizedBranchIds?: string[]
   ): Promise<number> {
+    if (authorizedBranchIds && authorizedBranchIds.length === 0) {
+      return 0
+    }
+
     if (!startDate) {
       const supp = await this.getSupplier(businessId, supplierId)
       return supp?.opening_payable_minor ?? 0
     }
+
+    const branchClause =
+      authorizedBranchIds && authorizedBranchIds.length > 0
+        ? `AND branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
+        : ''
+    const branchBindings =
+      authorizedBranchIds && authorizedBranchIds.length > 0 ? authorizedBranchIds : []
 
     // Find the latest entry before startDate
     const prior = await this.db
       .prepare(
         `SELECT balance_minor
          FROM supplier_ledger_transactions
-         WHERE business_id = ? AND supplier_id = ? AND business_date_key < ?
+         WHERE business_id = ? AND supplier_id = ? AND business_date_key < ? ${branchClause}
          ORDER BY business_date_key DESC, created_at DESC, rowid DESC
          LIMIT 1`
       )
-      .bind(businessId, supplierId, startDate)
+      .bind(businessId, supplierId, startDate, ...branchBindings)
       .first<{ balance_minor: number }>()
 
     if (prior) {
@@ -192,23 +206,48 @@ export class SupplierLedgerRepository {
 
   async getFinancialSummary(
     businessId: string,
-    supplierId: string
+    supplierId: string,
+    authorizedBranchIds?: string[]
   ): Promise<SupplierFinancialSummaryDTO> {
     const supp = await this.getSupplier(businessId, supplierId)
     if (!supp) {
       throw new Error('Supplier not found')
     }
 
+    if (authorizedBranchIds && authorizedBranchIds.length === 0) {
+      const openingPayableMinor = supp.opening_payable_minor || 0
+      return {
+        supplierId: supp.id,
+        supplierName: supp.name,
+        contactPerson: supp.contact_person,
+        phone: supp.phone,
+        openingPayableMinor,
+        currentPayableMinor: openingPayableMinor,
+        totalBilledMinor: 0,
+        totalPaidMinor: 0,
+        unallocatedAdvanceMinor: 0,
+        openPurchasesCount: 0,
+        earliestUnpaidPurchaseDate: null,
+      }
+    }
+
+    const branchClause =
+      authorizedBranchIds && authorizedBranchIds.length > 0
+        ? `AND branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
+        : ''
+    const branchBindings =
+      authorizedBranchIds && authorizedBranchIds.length > 0 ? authorizedBranchIds : []
+
     // Latest balance
     const lastEntry = await this.db
       .prepare(
         `SELECT balance_minor
          FROM supplier_ledger_transactions
-         WHERE business_id = ? AND supplier_id = ?
+         WHERE business_id = ? AND supplier_id = ? ${branchClause}
          ORDER BY rowid DESC
          LIMIT 1`
       )
-      .bind(businessId, supplierId)
+      .bind(businessId, supplierId, ...branchBindings)
       .first<{ balance_minor: number }>()
 
     const currentPayableMinor = lastEntry ? lastEntry.balance_minor : (supp.opening_payable_minor || 0)
@@ -218,9 +257,9 @@ export class SupplierLedgerRepository {
       .prepare(
         `SELECT SUM(credit_minor) as total
          FROM supplier_ledger_transactions
-         WHERE business_id = ? AND supplier_id = ? AND type = 'bill'`
+         WHERE business_id = ? AND supplier_id = ? AND type = 'bill' ${branchClause}`
       )
-      .bind(businessId, supplierId)
+      .bind(businessId, supplierId, ...branchBindings)
       .first<{ total: number | null }>()
     const totalBilledMinor = billedRes?.total ?? 0
 
@@ -229,20 +268,31 @@ export class SupplierLedgerRepository {
       .prepare(
         `SELECT SUM(amount_minor) as total
          FROM supplier_payments
-         WHERE business_id = ? AND supplier_id = ?`
+         WHERE business_id = ? AND supplier_id = ? ${branchClause}`
       )
-      .bind(businessId, supplierId)
+      .bind(businessId, supplierId, ...branchBindings)
       .first<{ total: number | null }>()
     const totalPaidMinor = paidRes?.total ?? 0
+
+    // Unallocated advance
+    const advanceRes = await this.db
+      .prepare(
+        `SELECT SUM(unallocated_amount_minor) as total_advance
+         FROM supplier_payments
+         WHERE business_id = ? AND supplier_id = ? ${branchClause}`
+      )
+      .bind(businessId, supplierId, ...branchBindings)
+      .first<{ total_advance: number | null }>()
+    const unallocatedAdvanceMinor = advanceRes?.total_advance ?? 0
 
     // Open purchases count and earliest unpaid purchase date
     const openPurchasesRes = await this.db
       .prepare(
         `SELECT COUNT(*) as open_count, MIN(purchase_date_key) as earliest_date
          FROM purchases
-         WHERE business_id = ? AND supplier_id = ? AND status NOT IN ('draft', 'cancelled') AND (total_amount_minor - paid_amount_minor) > 0`
+         WHERE business_id = ? AND supplier_id = ? AND status NOT IN ('draft', 'cancelled') AND (total_amount_minor - paid_amount_minor) > 0 ${branchClause}`
       )
-      .bind(businessId, supplierId)
+      .bind(businessId, supplierId, ...branchBindings)
       .first<{ open_count: number; earliest_date: string | null }>()
 
     return {
@@ -254,6 +304,7 @@ export class SupplierLedgerRepository {
       currentPayableMinor,
       totalBilledMinor,
       totalPaidMinor,
+      unallocatedAdvanceMinor,
       openPurchasesCount: openPurchasesRes?.open_count ?? 0,
       earliestUnpaidPurchaseDate: openPurchasesRes?.earliest_date ?? null,
     }

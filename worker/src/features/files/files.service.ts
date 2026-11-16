@@ -34,8 +34,13 @@ export class FilesService {
         break
       case 'invoice_pdf':
       case 'receipt_attachment':
-        if (!hasPermission(role, 'pos_sale') && !hasPermission(role, 'collect_payments')) {
-          throw HttpError.forbidden('Permission pos_sale or collect_payments required')
+      case 'expense_receipt':
+        if (
+          !hasPermission(role, 'pos_sale') &&
+          !hasPermission(role, 'collect_payments') &&
+          !hasPermission(role, 'expenses_write')
+        ) {
+          throw HttpError.forbidden('Permission pos_sale, collect_payments, or expenses_write required')
         }
         break
       case 'purchase_document':
@@ -57,6 +62,47 @@ export class FilesService {
   }
 
   /**
+   * Returns all file categories the caller's role is permitted to view.
+   */
+  private getReadableCategories(role: MemberRole): FileCategory[] {
+    const categories: FileCategory[] = []
+
+    if (hasPermission(role, 'files_read')) {
+      categories.push('product_image', 'business_logo')
+    }
+    if (
+      hasPermission(role, 'sales_read') ||
+      hasPermission(role, 'collect_payments') ||
+      hasPermission(role, 'pos_sale') ||
+      hasPermission(role, 'expenses_read')
+    ) {
+      categories.push('invoice_pdf', 'receipt_attachment', 'expense_receipt')
+    }
+    if (
+      hasPermission(role, 'purchase_read') ||
+      hasPermission(role, 'purchase_order') ||
+      hasPermission(role, 'receive_goods') ||
+      hasPermission(role, 'reports_view')
+    ) {
+      categories.push('purchase_document')
+    }
+    if (
+      hasPermission(role, 'supplier_read') ||
+      hasPermission(role, 'purchase_read') ||
+      hasPermission(role, 'purchase_order') ||
+      hasPermission(role, 'disburse_payments') ||
+      hasPermission(role, 'reports_view')
+    ) {
+      categories.push('supplier_document')
+    }
+    if (hasPermission(role, 'reports_view') || hasPermission(role, 'export_backup')) {
+      categories.push('report_export')
+    }
+
+    return categories
+  }
+
+  /**
    * Validates authorization for downloading or streaming files from specific categories.
    */
   private assertReadPermission(
@@ -64,27 +110,9 @@ export class FilesService {
     authorizedBranchIds: string[],
     file: FileMetadataDTO
   ): void {
-    const category = file.category
-    switch (category) {
-      case 'report_export':
-        if (!hasPermission(role, 'reports_view') && !hasPermission(role, 'export_backup')) {
-          throw HttpError.forbidden('Permission reports_view required to access report exports')
-        }
-        break
-      case 'supplier_document':
-      case 'purchase_document':
-        if (
-          !hasPermission(role, 'purchase_order') &&
-          !hasPermission(role, 'receive_goods') &&
-          !hasPermission(role, 'disburse_payments') &&
-          !hasPermission(role, 'reports_view')
-        ) {
-          throw HttpError.forbidden('Insufficient permissions to view procurement documents')
-        }
-        break
-      default:
-        // Product images, logos, receipts are accessible to authenticated staff
-        break
+    const readable = this.getReadableCategories(role)
+    if (!readable.includes(file.category)) {
+      throw HttpError.forbidden(`Insufficient permissions to view '${file.category}' files`)
     }
 
     // Branch scoping
@@ -250,18 +278,30 @@ export class FilesService {
     businessId: string,
     userId: string,
     role: MemberRole,
+    authorizedBranchIds: string[],
     fileId: string
   ): Promise<{ success: boolean; message: string }> {
+    if (!hasPermission(role, 'files_delete')) {
+      throw HttpError.forbidden('Permission files_delete required to delete files')
+    }
+
     const file = await this.repository.getFileById(env.DB, businessId, fileId)
     if (!file || file.status === 'deleted') {
       // Idempotent: already deleted
       return { success: true, message: 'File is already deleted or not found' }
     }
 
-    // Authorization: owner/admin or uploader
+    // Authorization: owner/admin, branch scope, and uploader checks
     const isOwnerOrAdmin = role === 'owner' || role === 'admin'
-    const isUploader = file.uploadedBy === userId
+    if (file.category === 'business_logo' && !isOwnerOrAdmin) {
+      throw HttpError.forbidden('Only owner or admin can delete store branding assets')
+    }
 
+    if (file.branchId && !authorizedBranchIds.includes(file.branchId)) {
+      throw HttpError.forbidden('Access denied: cannot delete files in an unauthorized branch')
+    }
+
+    const isUploader = file.uploadedBy === userId
     if (!isOwnerOrAdmin && !isUploader) {
       throw HttpError.forbidden('Permission denied: cannot delete files uploaded by other users')
     }
@@ -288,14 +328,24 @@ export class FilesService {
   async listFiles(
     env: Env,
     businessId: string,
+    role: MemberRole,
     authorizedBranchIds: string[],
     filters: FileListFilters
   ): Promise<{ files: FileMetadataDTO[]; total: number }> {
+    const readableCategories = this.getReadableCategories(role)
+    if (filters.category && !readableCategories.includes(filters.category)) {
+      throw HttpError.forbidden(`Insufficient permissions to list '${filters.category}' files`)
+    }
+
     const effectiveFilters: FileListFilters = { ...filters }
     if (effectiveFilters.branchId && !authorizedBranchIds.includes(effectiveFilters.branchId)) {
       throw HttpError.forbidden('Cannot list files for unauthorized branch')
     }
 
-    return this.repository.listFiles(env.DB, businessId, effectiveFilters)
+    return this.repository.listFiles(env.DB, businessId, {
+      ...effectiveFilters,
+      allowedCategories: readableCategories,
+      authorizedBranchIds,
+    })
   }
 }

@@ -52,6 +52,7 @@ export interface CustomerFinancialSummaryDTO {
   availableCreditMinor: number
   totalInvoicedMinor: number
   totalPaidMinor: number
+  unallocatedAdvanceMinor: number
   openInvoicesCount: number
   earliestUnpaidInvoiceDate: string | null
 }

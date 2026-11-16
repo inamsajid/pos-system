@@ -40,6 +40,7 @@ export interface StockCountDraft {
   name: string
   createdAt: string
   status: 'draft' | 'confirmed'
+  notes?: string
   rows: Array<{ productId: string; productName: string; sku: string; unit: ProductUnit; systemQuantity: number; physicalQuantity: number | null }>
   confirmedAt?: string
 }

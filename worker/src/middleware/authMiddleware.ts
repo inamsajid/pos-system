@@ -86,3 +86,21 @@ export function requirePermission(permission: Permission) {
   }
 }
 
+/**
+ * Asserts that the authenticated member holds at least one of the listed permissions.
+ */
+export function requireAnyPermission(...permissions: Permission[]) {
+  return async (ctx: RequestContext): Promise<void> => {
+    if (!ctx.tenant) {
+      await requireBusinessContext(ctx)
+    }
+
+    const role = ctx.tenant!.membership.role
+    if (!permissions.some((permission) => hasPermission(role, permission))) {
+      throw HttpError.forbidden(
+        `Action forbidden: Role '${role}' lacks required permissions (${permissions.join(', ')}).`
+      )
+    }
+  }
+}
+

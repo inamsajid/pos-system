@@ -347,8 +347,23 @@ export async function handleGetSupplierPayables(ctx: RequestContext): Promise<Re
 
   const businessId = ctx.tenant!.business.id
   const role = ctx.tenant!.membership.role
+  const branchId = extractQueryParam(ctx, 'branchId') || ctx.req.headers.get('X-Branch-Id')
 
-  const result = await reportsService.getSupplierPayables(ctx.env, businessId, role)
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    role,
+    branchId
+  )
+
+  const result = await reportsService.getSupplierPayables(
+    ctx.env,
+    businessId,
+    role,
+    authorizedBranchIds,
+    branchId
+  )
   return jsonResponse(result, 200, ctx.requestId)
 }
 
@@ -510,8 +525,23 @@ export async function handleGetCustomerReceivables(ctx: RequestContext): Promise
 
   const businessId = ctx.tenant!.business.id
   const role = ctx.tenant!.membership.role
+  const branchId = extractQueryParam(ctx, 'branchId') || ctx.req.headers.get('X-Branch-Id')
 
-  const result = await reportsService.getCustomerReceivables(ctx.env, businessId, role)
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    role,
+    branchId
+  )
+
+  const result = await reportsService.getCustomerReceivables(
+    ctx.env,
+    businessId,
+    role,
+    authorizedBranchIds,
+    branchId
+  )
   return jsonResponse(result, 200, ctx.requestId)
 }
 

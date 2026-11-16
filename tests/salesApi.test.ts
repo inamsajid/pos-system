@@ -149,6 +149,10 @@ describe('Sales API (/api/v1/sales)', () => {
       INSERT INTO business_members (id, business_id, user_id, role, is_active)
       VALUES ('mem_mgr_sales', ?, ?, 'manager', 1)
     `).run(businessId, managerUserId)
+    sqlite.prepare(`
+      INSERT INTO member_branches (id, member_id, branch_id)
+      VALUES ('mb_mgr_sales', 'mem_mgr_sales', ?)
+    `).run(branchId)
 
     sqlite.prepare(`
       INSERT INTO users (id, email, name, password_hash, status)
@@ -686,5 +690,46 @@ describe('Sales API (/api/v1/sales)', () => {
     expect(invRes.status).toBe(200)
     const invBody = (await invRes.json()) as { data: { sale_id: string } }
     expect(invBody.data.sale_id).toBe(sale.id)
+  })
+
+  it('rejects unassigned manager (zero member_branches) with 403 when attempting to void a sale', async () => {
+    const createRes = await worker.fetch(
+      new Request('http://localhost/api/v1/sales', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cashierToken}`,
+          'X-Business-Id': businessId,
+          'X-Branch-Id': branchId,
+        },
+        body: JSON.stringify({
+          items: [{ productId: productId1, quantity: 1 }],
+          payments: [{ method: 'cash', amountMinor: 55000 }],
+        }),
+      }),
+      env,
+      executionCtx
+    )
+    expect(createRes.status).toBe(201)
+    const sale = ((await createRes.json()) as { data: { id: string } }).data
+
+    // Remove manager's branch assignment
+    sqlite.prepare("DELETE FROM member_branches WHERE member_id = 'mem_mgr_sales'").run()
+
+    const voidRes = await worker.fetch(
+      new Request(`http://localhost/api/v1/sales/${sale.id}/void`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${managerToken}`,
+          'X-Business-Id': businessId,
+          'X-Branch-Id': branchId,
+        },
+        body: JSON.stringify({ reason: 'Should fail without branch assignment' }),
+      }),
+      env,
+      executionCtx
+    )
+    expect(voidRes.status).toBe(403)
   })
 })

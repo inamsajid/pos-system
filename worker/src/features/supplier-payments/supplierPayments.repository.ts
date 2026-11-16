@@ -3,13 +3,15 @@ import type {
   SupplierPaymentAllocationRow,
   SupplierPaymentDTO,
   SupplierPaymentAllocationDTO,
+  SupplierPaymentMethodAllocationDTO,
   SupplierPaymentFilterParams,
 } from './supplierPayments.types'
 import type { SupplierSnapshot } from '../purchases/purchases.types'
 
 export function mapSupplierPaymentRowToDTO(
   row: SupplierPaymentRow,
-  allocations?: SupplierPaymentAllocationDTO[]
+  allocations?: SupplierPaymentAllocationDTO[],
+  paymentMethods?: SupplierPaymentMethodAllocationDTO[]
 ): SupplierPaymentDTO {
   let supplierSnapshot: SupplierSnapshot | undefined
   if (row.supplier_snapshot_json) {
@@ -19,6 +21,16 @@ export function mapSupplierPaymentRowToDTO(
       // ignore JSON parse error
     }
   }
+
+  const methods = paymentMethods && paymentMethods.length > 0
+    ? paymentMethods
+    : [{
+        id: `spm_${row.id}`,
+        paymentId: row.id,
+        method: row.method,
+        amountMinor: row.amount_minor,
+        reference: row.reference,
+      }]
 
   return {
     id: row.id,
@@ -33,6 +45,7 @@ export function mapSupplierPaymentRowToDTO(
     unallocatedAmountMinor: row.unallocated_amount_minor,
     method: row.method,
     reference: row.reference,
+    paymentMethods: methods,
     notes: row.notes,
     businessDateKey: row.business_date_key,
     paidBy: row.paid_by,
@@ -71,15 +84,17 @@ export class SupplierPaymentsRepository {
     const conditions: string[] = ['sp.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    // Branch scoping
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    // Branch scoping (fail closed if empty)
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('sp.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`sp.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -152,7 +167,41 @@ export class SupplierPaymentsRepository {
     const listStmt = this.db.prepare(listSql)
     const { results } = await listStmt.bind(...listBindings).all<SupplierPaymentRow>()
 
-    const payments = (results || []).map((row) => mapSupplierPaymentRowToDTO(row))
+    const paymentIds = (results || []).map((r) => r.id)
+    const methodsByPayment = new Map<string, SupplierPaymentMethodAllocationDTO[]>()
+    if (paymentIds.length > 0) {
+      const placeholders = paymentIds.map(() => '?').join(', ')
+      const methodsRes = await this.db
+        .prepare(
+          `SELECT id, payment_id, method, amount_minor, reference
+           FROM supplier_payment_methods
+           WHERE payment_id IN (${placeholders})`
+        )
+        .bind(...paymentIds)
+        .all<{
+          id: string
+          payment_id: string
+          method: SupplierPaymentRow['method']
+          amount_minor: number
+          reference: string | null
+        }>()
+
+      for (const m of methodsRes.results || []) {
+        const arr = methodsByPayment.get(m.payment_id) || []
+        arr.push({
+          id: m.id,
+          paymentId: m.payment_id,
+          method: m.method,
+          amountMinor: m.amount_minor,
+          reference: m.reference,
+        })
+        methodsByPayment.set(m.payment_id, arr)
+      }
+    }
+
+    const payments = (results || []).map((row) =>
+      mapSupplierPaymentRowToDTO(row, undefined, methodsByPayment.get(row.id))
+    )
     return { payments, total }
   }
 
@@ -161,14 +210,16 @@ export class SupplierPaymentsRepository {
     paymentId: string,
     authorizedBranchIds: string[]
   ): Promise<SupplierPaymentDTO | null> {
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
     const conditions: string[] = ['sp.business_id = ?', 'sp.id = ?']
     const bindings: string[] = [businessId, paymentId]
 
-    if (authorizedBranchIds.length > 0) {
-      const placeholders = authorizedBranchIds.map(() => '?').join(', ')
-      conditions.push(`sp.branch_id IN (${placeholders})`)
-      bindings.push(...authorizedBranchIds)
-    }
+    const placeholders = authorizedBranchIds.map(() => '?').join(', ')
+    conditions.push(`sp.branch_id IN (${placeholders})`)
+    bindings.push(...authorizedBranchIds)
 
     const sql = `
       SELECT 
@@ -189,8 +240,40 @@ export class SupplierPaymentsRepository {
       return null
     }
 
-    const allocations = await this.getAllocationsByPaymentId(businessId, paymentId)
-    return mapSupplierPaymentRowToDTO(row, allocations)
+    const [allocations, methods] = await Promise.all([
+      this.getAllocationsByPaymentId(businessId, paymentId),
+      this.getMethodsByPaymentId(paymentId),
+    ])
+    return mapSupplierPaymentRowToDTO(row, allocations, methods)
+  }
+
+  async getMethodsByPaymentId(
+    paymentId: string
+  ): Promise<SupplierPaymentMethodAllocationDTO[]> {
+    const sql = `
+      SELECT id, payment_id, method, amount_minor, reference
+      FROM supplier_payment_methods
+      WHERE payment_id = ?
+      ORDER BY rowid ASC
+    `
+    const { results } = await this.db
+      .prepare(sql)
+      .bind(paymentId)
+      .all<{
+        id: string
+        payment_id: string
+        method: SupplierPaymentRow['method']
+        amount_minor: number
+        reference: string | null
+      }>()
+
+    return (results || []).map((r) => ({
+      id: r.id,
+      paymentId: r.payment_id,
+      method: r.method,
+      amountMinor: r.amount_minor,
+      reference: r.reference,
+    }))
   }
 
   async getAllocationsByPaymentId(

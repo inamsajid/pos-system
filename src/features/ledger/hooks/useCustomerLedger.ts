@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../../auth/context/useAuth'
+import { queryKeys } from '../../../api/queryKeys'
 import {
   fetchCustomerLedger,
   fetchCustomerLedgerSummary,
@@ -8,20 +9,24 @@ import {
 import type { CustomerFinancialSummary } from '../../customers/types/customer.types'
 
 export function useCustomerLedger(customerId?: string) {
-  const { activeBusiness, activeBranch } = useAuth()
-  const businessId = activeBusiness?.id || 'default'
-  const branchId = activeBranch?.id || 'all'
+  const { user, activeBusiness, activeBranch } = useAuth()
+  const scope = {
+    userId: user?.id,
+    businessId: activeBusiness?.id,
+    branchId: activeBranch?.id,
+  }
 
   const ledgerQuery = useQuery<LedgerEntry[]>({
-    queryKey: ['customerLedger', businessId, branchId, customerId],
+    queryKey: queryKeys.customers.ledger(customerId || 'none', {}, scope),
     queryFn: () => (customerId ? fetchCustomerLedger(customerId) : Promise.resolve([])),
     enabled: Boolean(customerId && customerId !== 'walk-in'),
     staleTime: 30_000,
   })
 
   const summaryQuery = useQuery<CustomerFinancialSummary>({
-    queryKey: ['customerLedgerSummary', businessId, branchId, customerId],
-    queryFn: () => (customerId ? fetchCustomerLedgerSummary(customerId) : Promise.reject('No ID')),
+    queryKey: queryKeys.customers.ledgerSummary(customerId || 'none', scope),
+    queryFn: () =>
+      customerId ? fetchCustomerLedgerSummary(customerId) : Promise.reject(new Error('No ID')),
     enabled: Boolean(customerId && customerId !== 'walk-in'),
     staleTime: 30_000,
   })
@@ -37,4 +42,3 @@ export function useCustomerLedger(customerId?: string) {
     },
   }
 }
-

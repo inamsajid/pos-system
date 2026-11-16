@@ -335,7 +335,7 @@ export function recordStockChanges(changes: Change[]) {
   return commit(changes)
 }
 
-export function recordStockAdjustment(product: Snapshot, input: StockMovementInput) {
+export function recordStockAdjustment(product: Snapshot, input: StockMovementInput): StockMovement {
   return commit([{ product, input }])[0]
 }
 
@@ -408,6 +408,31 @@ export function getLowStockProducts(products: Product[]) {
   )
 }
 
+export async function fetchStockCounts(): Promise<StockCountDraft[]> {
+  if (!isExplicitDemo()) {
+    const res = await apiClient.get<{ items: any[] } | any[]>('/inventory/counts?limit=100')
+    const list = Array.isArray(res) ? res : res.items || []
+    const mapped: StockCountDraft[] = list.map((c: any) => ({
+      id: c.id,
+      name: c.name || c.countNumber,
+      createdAt: c.createdAt,
+      status: c.status,
+      confirmedAt: c.confirmedAt || undefined,
+      rows: (c.items || []).map((item: any) => ({
+        productId: item.productId,
+        productName: item.productName || 'Product',
+        sku: item.sku || 'SKU',
+        unit: item.unit || 'piece',
+        systemQuantity: item.systemQuantity || 0,
+        physicalQuantity: item.physicalQuantity ?? undefined,
+      })),
+    }))
+    counts = mapped
+    return mapped.map((count) => ({ ...count, rows: count.rows.map((row) => ({ ...row })) }))
+  }
+  return getStockCounts()
+}
+
 export function getStockCounts() {
   return counts.map((count) => ({ ...count, rows: count.rows.map((row) => ({ ...row })) }))
 }
@@ -417,14 +442,14 @@ export function getStockCount(id: string) {
   return count ? { ...count, rows: count.rows.map((row) => ({ ...row })) } : undefined
 }
 
-export function saveStockCountDraft(draft: StockCountDraft) {
+export function saveStockCountDraft(draft: StockCountDraft): StockCountDraft {
   if (draft.status !== 'draft') throw new Error('A confirmed stock count cannot be edited.')
   counts = [draft, ...counts.filter((item) => item.id !== draft.id)]
   persist()
   return getStockCount(draft.id)!
 }
 
-export function confirmStockCount(countId: string, physicalCounts: Record<string, number>) {
+export function confirmStockCount(countId: string, physicalCounts: Record<string, number>): StockCountDraft {
   const count = counts.find((item) => item.id === countId)
   if (!count) throw new Error('Save this stock count before confirming it.')
   if (count.status !== 'draft') throw new Error('This stock count has already been confirmed.')
@@ -466,19 +491,77 @@ export function confirmStockCount(countId: string, physicalCounts: Record<string
     })
   }
   commit(changes)
-  const confirmed = {
+  const confirmed: StockCountDraft = {
     ...count,
-    status: 'confirmed' as const,
+    status: 'confirmed',
     confirmedAt: new Date().toISOString(),
     rows: count.rows.map((row) => ({
       ...row,
-      physicalQuantity: physicalCounts[row.productId],
-      systemQuantity: row.systemQuantity,
+      physicalQuantity: physicalCounts[row.productId] ?? row.systemQuantity,
     })),
   }
-  counts = counts.map((item) => (item.id === countId ? confirmed : item))
+  counts = [confirmed, ...counts.filter((item) => item.id !== countId)]
   persist()
   return getStockCount(countId)!
+}
+
+export async function remoteSaveStockCountDraft(draft: StockCountDraft): Promise<StockCountDraft> {
+  if (!isExplicitDemo()) {
+    const payload = {
+      name: draft.name,
+      notes: draft.notes || undefined,
+      items: draft.rows.map((r) => ({
+        productId: r.productId,
+        physicalQuantity: r.physicalQuantity ?? undefined,
+        notes: undefined,
+      })),
+    }
+    const res = await apiClient.post<any>('/inventory/counts', payload)
+    const updatedDraft: StockCountDraft = {
+      id: res.id,
+      name: res.name || draft.name,
+      createdAt: res.createdAt || draft.createdAt,
+      status: 'draft',
+      notes: draft.notes,
+      rows: (res.items || []).map((item: any) => ({
+        productId: item.productId,
+        productName: item.productName,
+        sku: item.sku,
+        unit: item.unit,
+        systemQuantity: item.systemQuantity,
+        physicalQuantity: item.physicalQuantity ?? undefined,
+      })),
+    }
+    counts = [updatedDraft, ...counts.filter((c) => c.id !== updatedDraft.id)]
+    persist()
+    return { ...updatedDraft, rows: updatedDraft.rows.map((r) => ({ ...r })) }
+  }
+  return saveStockCountDraft(draft)
+}
+
+export async function remoteConfirmStockCount(countId: string, physicalCounts: Record<string, number>): Promise<StockCountDraft> {
+  if (!isExplicitDemo()) {
+    const res = await apiClient.post<any>(`/inventory/counts/${countId}/complete`)
+    const confirmed: StockCountDraft = {
+      id: res.id || countId,
+      name: res.name || 'Stock Count',
+      createdAt: res.createdAt,
+      status: 'confirmed',
+      confirmedAt: res.confirmedAt || new Date().toISOString(),
+      rows: (res.items || []).map((item: any) => ({
+        productId: item.productId,
+        productName: item.productName,
+        sku: item.sku,
+        unit: item.unit,
+        systemQuantity: item.systemQuantity,
+        physicalQuantity: item.physicalQuantity ?? physicalCounts[item.productId],
+      })),
+    }
+    counts = [confirmed, ...counts.filter((c) => c.id !== confirmed.id)]
+    persist()
+    return { ...confirmed, rows: confirmed.rows.map((r) => ({ ...r })) }
+  }
+  return confirmStockCount(countId, physicalCounts)
 }
 
 /**

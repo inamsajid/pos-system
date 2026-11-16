@@ -2,7 +2,7 @@ import { productService } from '../../products/services/productService'
 import { supplierService } from '../../suppliers/services/supplierService'
 import { getProductStock, recordStockChanges } from '../../inventory/services/inventoryService'
 import { money } from '../../pos/utils/checkoutCalculations'
-import { apiClient } from '../../../lib/api-client'
+import { apiClient, ApiError } from '../../../lib/api-client'
 import type { GoodsReceipt, Purchase, PurchaseDraft } from '../types/purchase.types'
 
 const PURCHASES_KEY = 'northstar.purchases.v1'
@@ -228,9 +228,15 @@ export async function fetchPurchaseById(purchaseId: string): Promise<Purchase | 
   if (!isExplicitDemo()) {
     try {
       const dto = await apiClient.get<WorkerPurchaseDTO>(`/purchases/${purchaseId}`)
-      return mapWorkerPurchaseToPurchase(dto)
-    } catch {
-      return undefined
+      const mapped = mapWorkerPurchaseToPurchase(dto)
+      purchases = [mapped, ...purchases.filter((p) => p.id !== mapped.id)]
+      save()
+      return copyPurchase(mapped)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return undefined
+      }
+      throw err
     }
   }
   return getPurchaseById(purchaseId)
@@ -363,7 +369,13 @@ export async function createGoodsReceipt(
   if (previousReceipt) return copyReceipt(previousReceipt)
 
   if (!isExplicitDemo()) {
-    const purchase = find(purchaseId)
+    let purchase: Purchase
+    try {
+      purchase = find(purchaseId)
+    } catch {
+      const dto = await apiClient.get<WorkerPurchaseDTO>(`/purchases/${purchaseId}`)
+      purchase = mapWorkerPurchaseToPurchase(dto)
+    }
     const lines = purchase.items
       .map((item) => ({ item, received: quantities[item.id] ?? 0 }))
       .filter((line) => line.received > 0)
@@ -393,7 +405,7 @@ export async function createGoodsReceipt(
         quantityReceived: received,
       })),
       receivedAt: dto.receivedAt || new Date().toISOString(),
-      receivedBy: 'Ayesha Khan',
+      receivedBy: dto.receivedByName || dto.receivedBy || 'Staff Member',
       notes: notes.trim() || undefined,
     }
     receipts = [receipt, ...receipts]
@@ -456,7 +468,7 @@ export async function createGoodsReceipt(
       quantityReceived: received,
     })),
     receivedAt: new Date().toISOString(),
-    receivedBy: 'Ayesha Khan',
+    receivedBy: 'Staff Member',
     notes: notes.trim() || undefined,
   }
   recordStockChanges(stockChanges)

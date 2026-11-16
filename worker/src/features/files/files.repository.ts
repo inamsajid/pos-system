@@ -1,4 +1,9 @@
-import type { FileListFilters, FileMetadataDTO, FileStatus } from './files.types'
+import type { FileCategory, FileListFilters, FileMetadataDTO, FileStatus } from './files.types'
+
+export interface ScopedFileListFilters extends FileListFilters {
+  allowedCategories?: FileCategory[]
+  authorizedBranchIds?: string[]
+}
 
 export interface FileDbRecord {
   id: string
@@ -114,7 +119,7 @@ export class FilesRepository {
   async listFiles(
     d1: D1Database,
     businessId: string,
-    filters: FileListFilters
+    filters: ScopedFileListFilters
   ): Promise<{ files: FileMetadataDTO[]; total: number }> {
     const conditions: string[] = ['business_id = ?']
     const params: unknown[] = [businessId]
@@ -130,6 +135,14 @@ export class FilesRepository {
     if (filters.category) {
       conditions.push('category = ?')
       params.push(filters.category)
+    } else if (filters.allowedCategories !== undefined) {
+      if (filters.allowedCategories.length === 0) {
+        conditions.push('1 = 0')
+      } else {
+        const placeholders = filters.allowedCategories.map(() => '?').join(', ')
+        conditions.push(`category IN (${placeholders})`)
+        params.push(...filters.allowedCategories)
+      }
     }
 
     if (filters.relatedType) {
@@ -145,6 +158,14 @@ export class FilesRepository {
     if (filters.branchId) {
       conditions.push('branch_id = ?')
       params.push(filters.branchId)
+    } else if (filters.authorizedBranchIds !== undefined) {
+      if (filters.authorizedBranchIds.length === 0) {
+        conditions.push('branch_id IS NULL')
+      } else {
+        const placeholders = filters.authorizedBranchIds.map(() => '?').join(', ')
+        conditions.push(`(branch_id IS NULL OR branch_id IN (${placeholders}))`)
+        params.push(...filters.authorizedBranchIds)
+      }
     }
 
     const whereClause = conditions.join(' AND ')
@@ -211,6 +232,9 @@ export class FilesRepository {
         break
       case 'customer':
         query = 'SELECT id FROM customers WHERE business_id = ? AND id = ?'
+        break
+      case 'expense':
+        query = 'SELECT id FROM expenses WHERE business_id = ? AND id = ?'
         break
       case 'report':
         return true // report exports don't link to a relational row

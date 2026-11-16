@@ -10,8 +10,20 @@ export class OutboxRepository {
     this.db = db
   }
 
+  getDb(): NorthstarOfflineDatabase {
+    return this.db
+  }
+
   async findById(id: string): Promise<OutboxCommandRecord | undefined> {
     return this.db.outboxCommands.get(id)
+  }
+
+  async listByTenant(userId: string, businessId: string): Promise<OutboxCommandRecord[]> {
+    const records = await this.db.outboxCommands
+      .filter((c) => c.userId === userId && c.businessId === businessId)
+      .toArray()
+    records.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+    return records
   }
 
   async findByIdempotencyKey(
@@ -66,11 +78,9 @@ export class OutboxRepository {
   }
 
   /**
-   * Atomically claims a batch of eligible commands for processing using lease fencing.
-   * Eligible commands:
-   * 1. Status 'pending'
-   * 2. Status 'retryable' where nextAttemptAt <= now
-   * 3. Abandoned leases: status in ('leased', 'sending') where leaseExpiresAt <= now
+   * Atomically claims a FIFO batch of eligible commands for processing using lease fencing.
+   * Stops cleanly before any unresolved blocking head-of-line command (blocked_auth, conflict,
+   * reconciliation_required, active unexpired lease, or future backoff retryable).
    */
   async claimEligibleBatch(params: {
     userId: string
@@ -84,38 +94,52 @@ export class OutboxRepository {
     const nowIso = new Date(now).toISOString()
 
     return this.db.transaction('rw', this.db.outboxCommands, async () => {
-      // Find candidate records matching user and business
-      const allUserCommands = await this.db.outboxCommands
+      const activeUserCommands = await this.db.outboxCommands
         .where('[userId+businessId+status]')
         .anyOf([
           [userId, businessId, 'pending'],
           [userId, businessId, 'retryable'],
           [userId, businessId, 'leased'],
           [userId, businessId, 'sending'],
+          [userId, businessId, 'blocked_auth'],
+          [userId, businessId, 'conflict'],
+          [userId, businessId, 'reconciliation_required'],
         ])
         .toArray()
 
+      const scoped = activeUserCommands
+        .filter((cmd) => !(branchId && cmd.branchId && cmd.branchId !== branchId))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+
       const eligible: OutboxCommandRecord[] = []
 
-      for (const cmd of allUserCommands) {
+      for (const cmd of scoped) {
         if (eligible.length >= limit) break
 
-        // Branch filter if specified
-        if (branchId && cmd.branchId && cmd.branchId !== branchId) {
-          continue
+        if (
+          cmd.status === 'blocked_auth' ||
+          cmd.status === 'conflict' ||
+          cmd.status === 'reconciliation_required'
+        ) {
+          // Strict FIFO head-of-line blocking until operator resolves or re-authenticates
+          break
         }
 
-        if (cmd.status === 'pending') {
-          eligible.push(cmd)
+        if (cmd.status === 'leased' || cmd.status === 'sending') {
+          if (cmd.leaseExpiresAt && new Date(cmd.leaseExpiresAt).getTime() <= now) {
+            eligible.push(cmd)
+          } else {
+            // Active lease at queue head blocks trailing commands until settled
+            break
+          }
         } else if (cmd.status === 'retryable') {
           if (!cmd.nextAttemptAt || new Date(cmd.nextAttemptAt).getTime() <= now) {
             eligible.push(cmd)
+          } else {
+            break
           }
-        } else if (cmd.status === 'leased' || cmd.status === 'sending') {
-          // Abandoned lease recovery
-          if (cmd.leaseExpiresAt && new Date(cmd.leaseExpiresAt).getTime() <= now) {
-            eligible.push(cmd)
-          }
+        } else if (cmd.status === 'pending') {
+          eligible.push(cmd)
         }
       }
 
@@ -136,6 +160,63 @@ export class OutboxRepository {
       }
 
       return claimed
+    })
+  }
+
+  /**
+   * Releases unclaimed trailing leases after a batch halts early on a blocker.
+   */
+  async releaseLeases(commands: Array<{ id: string; leaseToken: string | null }>): Promise<void> {
+    if (commands.length === 0) return
+    const nowIso = new Date().toISOString()
+
+    await this.db.transaction('rw', this.db.outboxCommands, async () => {
+      for (const { id, leaseToken } of commands) {
+        const existing = await this.db.outboxCommands.get(id)
+        if (!existing || existing.status !== 'leased' || existing.leaseToken !== leaseToken) {
+          continue
+        }
+        await this.db.outboxCommands.put({
+          ...existing,
+          status: 'pending',
+          attemptCount: Math.max(0, existing.attemptCount - 1),
+          nextAttemptAt: nowIso,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          updatedAt: nowIso,
+        })
+      }
+    })
+  }
+
+  /**
+   * Re-queues blocked_auth commands once user re-authenticates cleanly.
+   */
+  async resumeAuthBlocked(userId: string, businessId?: string): Promise<number> {
+    const nowIso = new Date().toISOString()
+    return this.db.transaction('rw', this.db.outboxCommands, async () => {
+      const blocked = await this.db.outboxCommands
+        .filter(
+          (c) =>
+            c.userId === userId &&
+            c.status === 'blocked_auth' &&
+            (!businessId || c.businessId === businessId)
+        )
+        .toArray()
+
+      for (const cmd of blocked) {
+        await this.db.outboxCommands.put({
+          ...cmd,
+          status: 'pending',
+          nextAttemptAt: nowIso,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastErrorCode: null,
+          updatedAt: nowIso,
+        })
+      }
+
+      return blocked.length
     })
   }
 

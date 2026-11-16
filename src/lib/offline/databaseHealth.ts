@@ -27,6 +27,9 @@ export async function checkDatabaseHealth(db: Dexie): Promise<DatabaseHealthResu
       cacheSyncStateCount,
       syncCursorsCount,
       outboxCommandsCount,
+      offlineSalesCount,
+      offlineAuthorizationsCount,
+      offlineAllocationsCount,
     ] = await Promise.all([
       db.table('deviceMetadata').count(),
       db.table('cachedProducts').count(),
@@ -35,6 +38,9 @@ export async function checkDatabaseHealth(db: Dexie): Promise<DatabaseHealthResu
       db.table('cacheSyncState').count(),
       db.table('syncCursors').count().catch(() => 0),
       db.table('outboxCommands').count().catch(() => 0),
+      db.table('offlineSales').count().catch(() => 0),
+      db.table('offlineAuthorizations').count().catch(() => 0),
+      db.table('offlineAllocations').count().catch(() => 0),
     ])
 
     return {
@@ -49,6 +55,9 @@ export async function checkDatabaseHealth(db: Dexie): Promise<DatabaseHealthResu
         cacheSyncState: cacheSyncStateCount,
         syncCursors: syncCursorsCount,
         outboxCommands: outboxCommandsCount,
+        offlineSales: offlineSalesCount,
+        offlineAuthorizations: offlineAuthorizationsCount,
+        offlineAllocations: offlineAllocationsCount,
       },
       storage,
       checkedAt: now,
@@ -64,6 +73,11 @@ export async function checkDatabaseHealth(db: Dexie): Promise<DatabaseHealthResu
         cachedCategories: 0,
         cachedBranchStock: 0,
         cacheSyncState: 0,
+        syncCursors: 0,
+        outboxCommands: 0,
+        offlineSales: 0,
+        offlineAuthorizations: 0,
+        offlineAllocations: 0,
       },
       storage: {
         quotaBytes: null,

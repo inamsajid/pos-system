@@ -22,13 +22,22 @@ export class ExpensesRepository {
     const conditions: string[] = ['e.business_id = ?']
     const params: unknown[] = [businessId]
 
-    if (authorizedBranchIds && authorizedBranchIds.length > 0) {
-      const placeholders = authorizedBranchIds.map(() => '?').join(', ')
-      conditions.push(`e.branch_id IN (${placeholders})`)
-      params.push(...authorizedBranchIds)
-    }
-
-    if (filters.branchId) {
+    if (authorizedBranchIds !== undefined) {
+      if (authorizedBranchIds.length === 0) {
+        conditions.push('1 = 0')
+      } else if (filters.branchId) {
+        if (!authorizedBranchIds.includes(filters.branchId)) {
+          conditions.push('1 = 0')
+        } else {
+          conditions.push('e.branch_id = ?')
+          params.push(filters.branchId)
+        }
+      } else {
+        const placeholders = authorizedBranchIds.map(() => '?').join(', ')
+        conditions.push(`e.branch_id IN (${placeholders})`)
+        params.push(...authorizedBranchIds)
+      }
+    } else if (filters.branchId) {
       conditions.push('e.branch_id = ?')
       params.push(filters.branchId)
     }
@@ -111,13 +120,22 @@ export class ExpensesRepository {
     const conditions: string[] = ['e.business_id = ?']
     const params: unknown[] = [businessId]
 
-    if (authorizedBranchIds && authorizedBranchIds.length > 0) {
-      const placeholders = authorizedBranchIds.map(() => '?').join(', ')
-      conditions.push(`e.branch_id IN (${placeholders})`)
-      params.push(...authorizedBranchIds)
-    }
-
-    if (filters.branchId) {
+    if (authorizedBranchIds !== undefined) {
+      if (authorizedBranchIds.length === 0) {
+        conditions.push('1 = 0')
+      } else if (filters.branchId) {
+        if (!authorizedBranchIds.includes(filters.branchId)) {
+          conditions.push('1 = 0')
+        } else {
+          conditions.push('e.branch_id = ?')
+          params.push(filters.branchId)
+        }
+      } else {
+        const placeholders = authorizedBranchIds.map(() => '?').join(', ')
+        conditions.push(`e.branch_id IN (${placeholders})`)
+        params.push(...authorizedBranchIds)
+      }
+    } else if (filters.branchId) {
       conditions.push('e.branch_id = ?')
       params.push(filters.branchId)
     }
@@ -409,11 +427,20 @@ export class ExpensesRepository {
     monthPrefix: string,
     authorizedBranchIds?: string[]
   ): Promise<ExpenseSummaryDTO> {
-    const branchCondition =
-      authorizedBranchIds && authorizedBranchIds.length > 0
-        ? `AND branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
-    const branchParams = authorizedBranchIds && authorizedBranchIds.length > 0 ? authorizedBranchIds : []
+    let plainBranchCondition = ''
+    let catBranchCondition = ''
+    let branchParams: string[] = []
+    if (authorizedBranchIds !== undefined) {
+      if (authorizedBranchIds.length === 0) {
+        plainBranchCondition = 'AND 1 = 0'
+        catBranchCondition = 'AND 1 = 0'
+      } else {
+        const placeholders = authorizedBranchIds.map(() => '?').join(', ')
+        plainBranchCondition = `AND branch_id IN (${placeholders})`
+        catBranchCondition = `AND e.branch_id IN (${placeholders})`
+        branchParams = authorizedBranchIds
+      }
+    }
 
     // Totals
     const totalsSql = `
@@ -427,7 +454,7 @@ export class ExpensesRepository {
         COALESCE(SUM(CASE WHEN status = 'posted' AND business_date_key = ? THEN amount_minor ELSE 0 END), 0) AS today_amount_minor,
         COALESCE(SUM(CASE WHEN status = 'posted' AND business_date_key LIKE ? THEN amount_minor ELSE 0 END), 0) AS month_amount_minor
       FROM expenses
-      WHERE business_id = ? ${branchCondition}
+      WHERE business_id = ? ${plainBranchCondition}
     `
     const totals = await this.db
       .prepare(totalsSql)
@@ -443,7 +470,7 @@ export class ExpensesRepository {
         COUNT(*) AS count
       FROM expenses e
       LEFT JOIN expense_categories c ON c.id = e.category_id
-      WHERE e.business_id = ? AND e.status = 'posted' ${branchCondition}
+      WHERE e.business_id = ? AND e.status = 'posted' ${catBranchCondition}
       GROUP BY e.category_id
       ORDER BY amount_minor DESC
     `
@@ -456,7 +483,7 @@ export class ExpensesRepository {
         SUM(amount_minor) AS amount_minor,
         COUNT(*) AS count
       FROM expenses
-      WHERE business_id = ? AND status = 'posted' ${branchCondition}
+      WHERE business_id = ? AND status = 'posted' ${plainBranchCondition}
       GROUP BY payment_method
       ORDER BY amount_minor DESC
     `

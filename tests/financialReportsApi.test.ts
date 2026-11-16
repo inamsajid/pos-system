@@ -221,7 +221,7 @@ describe('Financial & Ledger Reports APIs (Step 12.6)', () => {
     expect(poJson.data.receivedPurchasesCount).toBe(1)
     expect(poJson.data.cancelledPurchasesCount).toBe(1)
     expect(poJson.data.paidAmountMinor).toBe(130000)
-    expect(poJson.data.outstandingPayableMinor).toBe(100000)
+    expect(poJson.data.outstandingPayableMinor).toBe(0) // Strictly recognized received goods (PO-2 is 80k-80k=0, PO-1 is unreceived ordered)
 
     // Purchases Trends
     const trendsReq = new Request('http://localhost/api/v1/reports/purchases/trends?fromDate=2026-11-01&toDate=2026-11-30', {
@@ -254,7 +254,7 @@ describe('Financial & Ledger Reports APIs (Step 12.6)', () => {
         subtotal_minor, discount_minor, tax_minor, total_amount_minor, paid_amount_minor,
         status, purchase_date_key, created_by
       ) VALUES
-        ('po_pay', ?, ?, 'PO-PAY', 's_grain', '{}', 45000, 0, 0, 45000, 0, 'ordered', '2026-11-08', ?)
+        ('po_pay', ?, ?, 'PO-PAY', 's_grain', '{}', 45000, 0, 0, 45000, 0, 'received', '2026-11-08', ?)
     `).run(bizId, branchId, ownerUserId)
 
     // Check Customer Receivables

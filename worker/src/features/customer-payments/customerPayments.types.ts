@@ -41,6 +41,7 @@ export interface PaymentRow {
   business_date_key: string
   received_by: string
   received_at: string
+  status?: 'posted' | 'reversed' | 'voided'
   created_at: string
   customer_name?: string
   receiver_name?: string
@@ -89,6 +90,7 @@ export interface CustomerPaymentDTO {
   receivedBy: string
   receivedByName?: string
   receivedAt: string
+  status?: 'posted' | 'reversed' | 'voided'
   createdAt: string
   paymentMethods: PaymentMethodEntry[]
   allocations?: PaymentAllocationDTO[]

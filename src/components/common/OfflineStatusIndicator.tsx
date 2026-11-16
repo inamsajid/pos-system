@@ -70,7 +70,7 @@ export function OfflineStatusBanner() {
       <div className="flex items-center gap-2">
         <AlertTriangle size={16} className="text-amber-600 shrink-0" />
         <div>
-          <span className="font-semibold">Offline Mode Active.</span> Showing cached catalog data (last synced: {lastSyncedTime}). Catalog updates and POS checkout are restricted until connection is restored.
+          <span className="font-semibold">Offline Mode Active.</span> Showing cached catalog data (last synced: {lastSyncedTime}). Only pre-authorized Walk-in Cash POS checkouts run locally (provisional until server sync). Catalog edits, customer credit, and reports wait for reconnection.
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">

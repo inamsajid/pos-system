@@ -68,8 +68,16 @@ export async function handleGetExpense(ctx: RequestContext): Promise<Response> {
   const businessId = ctx.tenant!.business.id
   const expenseId = ctx.params.id
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new ExpensesService(ctx.env.DB)
-  const expense = await service.getExpenseById(businessId, expenseId)
+  const expense = await service.getExpenseById(businessId, expenseId, authorizedBranchIds)
 
   return jsonResponse(expense, 200, ctx.requestId)
 }
@@ -110,8 +118,22 @@ export async function handleUpdateExpense(ctx: RequestContext): Promise<Response
   const body = await ctx.req.json().catch(() => ({}))
   const input = validateUpdateExpenseInput(body)
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new ExpensesService(ctx.env.DB)
-  const updated = await service.updateExpense(businessId, userId, expenseId, input)
+  const updated = await service.updateExpense(
+    businessId,
+    userId,
+    expenseId,
+    input,
+    authorizedBranchIds
+  )
 
   return jsonResponse(updated, 200, ctx.requestId)
 }
@@ -132,8 +154,22 @@ export async function handleVoidExpense(ctx: RequestContext): Promise<Response> 
   const body = await ctx.req.json().catch(() => ({}))
   const input = validateVoidExpenseInput(body)
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new ExpensesService(ctx.env.DB)
-  const voided = await service.voidExpense(businessId, userId, expenseId, input)
+  const voided = await service.voidExpense(
+    businessId,
+    userId,
+    expenseId,
+    input,
+    authorizedBranchIds
+  )
 
   return jsonResponse(voided, 200, ctx.requestId)
 }

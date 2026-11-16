@@ -8,7 +8,7 @@ import { formatCurrency } from '../../../lib/currency'
 import { supplierService } from '../../suppliers/services/supplierService'
 import { getSupplierLedgerSummary } from '../../suppliers/services/supplierLedgerService'
 import type { Supplier } from '../../suppliers/types/supplier.types'
-import { createSupplierPayment, getSupplierOutstandingPurchases } from '../services/supplierPaymentService'
+import { createSupplierPayment, fetchSupplierOutstandingPurchases } from '../services/supplierPaymentService'
 import type { OutstandingPurchase, SupplierPaymentDraft, SupplierPaymentMethod } from '../types/supplierPayment.types'
 
 type MethodLine = { method: SupplierPaymentMethod; amount: string; reference: string }
@@ -19,12 +19,28 @@ export function AddSupplierPaymentPage() {
   const [params] = useSearchParams(); const navigate = useNavigate()
   const [requestId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `supplier-payment-${Date.now()}`)
   const [suppliers, setSuppliers] = useState<Supplier[]>([]); const [supplierQuery, setSupplierQuery] = useState(''); const [supplierId, setSupplierId] = useState(params.get('supplierId') ?? '')
-  const initialPurchases = supplierId ? getSupplierOutstandingPurchases(supplierId) : []
-  const initialPurchase = initialPurchases.find(item => item.purchaseId === params.get('purchaseId'))
-  const [amount, setAmount] = useState(''); const [allocations, setAllocations] = useState<Record<string, string>>(initialPurchase ? { [initialPurchase.purchaseId]: String(initialPurchase.outstanding) } : {}); const [methodsRows, setMethodsRows] = useState<MethodLine[]>([{ method: 'cash', amount: '', reference: '' }])
+  const [purchases, setPurchases] = useState<OutstandingPurchase[]>([])
+  useEffect(() => {
+    if (!supplierId) {
+      setPurchases([])
+      return
+    }
+    let active = true
+    void fetchSupplierOutstandingPurchases(supplierId).then(list => {
+      if (active) {
+        setPurchases(list)
+        const paramPurId = params.get('purchaseId')
+        const target = list.find(item => item.purchaseId === paramPurId)
+        if (target) {
+          setAllocations({ [target.purchaseId]: String(target.outstanding) })
+        }
+      }
+    })
+    return () => { active = false }
+  }, [supplierId])
+  const [amount, setAmount] = useState(''); const [allocations, setAllocations] = useState<Record<string, string>>({}); const [methodsRows, setMethodsRows] = useState<MethodLine[]>([{ method: 'cash', amount: '', reference: '' }])
   const [paidAt, setPaidAt] = useState(karachiDateTime); const [notes, setNotes] = useState(''); const [keepAdvance, setKeepAdvance] = useState(false); const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
   useEffect(() => { void supplierService.getSuppliers().then(rows => setSuppliers(rows.filter(supplier => supplier.status === 'active'))) }, [])
-  const purchases = supplierId ? getSupplierOutstandingPurchases(supplierId) : []
   const supplier = suppliers.find(item => item.id === supplierId); const summary = supplierId ? getSupplierLedgerSummary(supplierId) : undefined
   const foundSuppliers = useMemo(() => suppliers.filter(s => !supplierQuery || [s.name, s.supplierCode, s.companyName, s.phone].some(value => value?.toLowerCase().includes(supplierQuery.toLowerCase()))), [suppliers, supplierQuery])
   const total = Number(amount) || 0; const methodTotal = methodsRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0); const allocated = Object.values(allocations).reduce((sum, value) => sum + (Number(value) || 0), 0); const advance = Math.max(0, total - allocated)

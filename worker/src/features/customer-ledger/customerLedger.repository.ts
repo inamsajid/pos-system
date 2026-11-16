@@ -77,14 +77,16 @@ export class CustomerLedgerRepository {
     const conditions: string[] = ['business_id = ?', 'customer_id = ?']
     const bindings: (string | number)[] = [businessId, customerId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -161,23 +163,35 @@ export class CustomerLedgerRepository {
   async getOpeningBalanceBeforeDate(
     businessId: string,
     customerId: string,
-    startDate?: string
+    startDate?: string,
+    authorizedBranchIds?: string[]
   ): Promise<number> {
+    if (authorizedBranchIds && authorizedBranchIds.length === 0) {
+      return 0
+    }
+
     if (!startDate) {
       const cust = await this.getCustomer(businessId, customerId)
       return cust?.opening_balance_minor ?? 0
     }
+
+    const branchClause =
+      authorizedBranchIds && authorizedBranchIds.length > 0
+        ? `AND branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
+        : ''
+    const branchBindings =
+      authorizedBranchIds && authorizedBranchIds.length > 0 ? authorizedBranchIds : []
 
     // Find the latest entry before startDate
     const prior = await this.db
       .prepare(
         `SELECT balance_minor
          FROM customer_ledger_transactions
-         WHERE business_id = ? AND customer_id = ? AND business_date_key < ?
+         WHERE business_id = ? AND customer_id = ? AND business_date_key < ? ${branchClause}
          ORDER BY business_date_key DESC, created_at DESC, id DESC
          LIMIT 1`
       )
-      .bind(businessId, customerId, startDate)
+      .bind(businessId, customerId, startDate, ...branchBindings)
       .first<{ balance_minor: number }>()
 
     if (prior) {
@@ -190,23 +204,50 @@ export class CustomerLedgerRepository {
 
   async getFinancialSummary(
     businessId: string,
-    customerId: string
+    customerId: string,
+    authorizedBranchIds?: string[]
   ): Promise<CustomerFinancialSummaryDTO> {
     const cust = await this.getCustomer(businessId, customerId)
     if (!cust) {
       throw new Error('Customer not found')
     }
 
+    if (authorizedBranchIds && authorizedBranchIds.length === 0) {
+      const openingBalanceMinor = cust.opening_balance_minor || 0
+      const creditLimitMinor = cust.credit_limit_minor || 0
+      return {
+        customerId: cust.id,
+        customerCode: cust.customer_code,
+        customerName: cust.name,
+        openingBalanceMinor,
+        currentBalanceMinor: openingBalanceMinor,
+        creditLimitMinor,
+        availableCreditMinor: Math.max(0, creditLimitMinor - openingBalanceMinor),
+        totalInvoicedMinor: 0,
+        totalPaidMinor: 0,
+        unallocatedAdvanceMinor: 0,
+        openInvoicesCount: 0,
+        earliestUnpaidInvoiceDate: null,
+      }
+    }
+
+    const branchClause =
+      authorizedBranchIds && authorizedBranchIds.length > 0
+        ? `AND branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
+        : ''
+    const branchBindings =
+      authorizedBranchIds && authorizedBranchIds.length > 0 ? authorizedBranchIds : []
+
     // Latest balance
     const lastEntry = await this.db
       .prepare(
         `SELECT balance_minor
          FROM customer_ledger_transactions
-         WHERE business_id = ? AND customer_id = ?
+         WHERE business_id = ? AND customer_id = ? ${branchClause}
          ORDER BY rowid DESC
          LIMIT 1`
       )
-      .bind(businessId, customerId)
+      .bind(businessId, customerId, ...branchBindings)
       .first<{ balance_minor: number }>()
 
     const currentBalanceMinor = lastEntry ? lastEntry.balance_minor : (cust.opening_balance_minor || 0)
@@ -218,31 +259,42 @@ export class CustomerLedgerRepository {
       .prepare(
         `SELECT SUM(total_amount_minor) as total
          FROM invoices
-         WHERE business_id = ? AND customer_id = ? AND status = 'active'`
+         WHERE business_id = ? AND customer_id = ? AND status = 'active' ${branchClause}`
       )
-      .bind(businessId, customerId)
+      .bind(businessId, customerId, ...branchBindings)
       .first<{ total: number | null }>()
     const totalInvoicedMinor = invoicedRes?.total ?? 0
 
-    // Total paid
+    // Total paid (only posted payments)
     const paidRes = await this.db
       .prepare(
         `SELECT SUM(amount_minor) as total
          FROM payments
-         WHERE business_id = ? AND customer_id = ?`
+         WHERE business_id = ? AND customer_id = ? AND status = 'posted' ${branchClause}`
       )
-      .bind(businessId, customerId)
+      .bind(businessId, customerId, ...branchBindings)
       .first<{ total: number | null }>()
     const totalPaidMinor = paidRes?.total ?? 0
+
+    // Unallocated advance
+    const advanceRes = await this.db
+      .prepare(
+        `SELECT SUM(unallocated_amount_minor) as total_advance
+         FROM payments
+         WHERE business_id = ? AND customer_id = ? AND status = 'posted' ${branchClause}`
+      )
+      .bind(businessId, customerId, ...branchBindings)
+      .first<{ total_advance: number | null }>()
+    const unallocatedAdvanceMinor = advanceRes?.total_advance ?? 0
 
     // Open invoices count and earliest unpaid invoice date
     const openInvoicesRes = await this.db
       .prepare(
         `SELECT COUNT(*) as open_count, MIN(business_date_key) as earliest_date
          FROM invoices
-         WHERE business_id = ? AND customer_id = ? AND status = 'active' AND remaining_amount_minor > 0`
+         WHERE business_id = ? AND customer_id = ? AND status = 'active' AND remaining_amount_minor > 0 ${branchClause}`
       )
-      .bind(businessId, customerId)
+      .bind(businessId, customerId, ...branchBindings)
       .first<{ open_count: number; earliest_date: string | null }>()
 
     return {
@@ -255,6 +307,7 @@ export class CustomerLedgerRepository {
       availableCreditMinor,
       totalInvoicedMinor,
       totalPaidMinor,
+      unallocatedAdvanceMinor,
       openInvoicesCount: openInvoicesRes?.open_count ?? 0,
       earliestUnpaidInvoiceDate: openInvoicesRes?.earliest_date ?? null,
     }

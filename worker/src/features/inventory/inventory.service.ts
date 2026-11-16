@@ -169,6 +169,7 @@ export class InventoryService {
     const signedQty = input.type === 'adjustment_in' ? input.quantityChange : -input.quantityChange
     const newQty = currentQty + signedQty
     const businessDateKey = getCurrentBusinessDateKey()
+    const nowIso = new Date().toISOString()
 
     const adjId = `adj_${crypto.randomUUID()}`
     const adjustmentNumber = `ADJ-${businessDateKey.replace(/-/g, '')}-${crypto.randomUUID().substring(0, 6).toUpperCase()}`
@@ -199,66 +200,138 @@ export class InventoryService {
         )
     )
 
-    // Insert stock_movements
+    // Ensure inventory_balances row exists initialized to 0.0
     statements.push(
       this.db
         .prepare(
-          `INSERT INTO stock_movements (
-            id, business_id, branch_id, movement_number, product_id, type,
-            quantity_change, previous_quantity, new_quantity, unit_cost_minor,
-            reference_type, reference_id, reference_number, reason, notes,
-            business_date_key, created_by, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'adjustment', ?, ?, ?, ?, ?, ?, datetime('now'))`
-        )
-        .bind(
-          movId,
-          businessId,
-          branchId,
-          movementNumber,
-          product.id,
-          input.type,
-          signedQty,
-          currentQty,
-          newQty,
-          product.purchase_price_minor,
-          adjId,
-          adjustmentNumber,
-          input.reason,
-          input.notes || null,
-          businessDateKey,
-          userId
-        )
-    )
-
-    // Upsert inventory_balances
-    statements.push(
-      this.db
-        .prepare(
-          `INSERT INTO inventory_balances (
+          `INSERT OR IGNORE INTO inventory_balances (
             id, business_id, branch_id, product_id, quantity_on_hand, updated_at
-          ) VALUES (?, ?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(branch_id, product_id) DO UPDATE SET
-            quantity_on_hand = quantity_on_hand + excluded.quantity_on_hand,
-            updated_at = datetime('now')`
+          ) VALUES (?, ?, ?, ?, 0.0, datetime('now'))`
         )
-        .bind(`inv_${crypto.randomUUID()}`, businessId, branchId, product.id, signedQty)
+        .bind(`inv_${crypto.randomUUID()}`, businessId, branchId, product.id)
+    )
+
+    // Insert stock_movements reading live balance and guarding concurrent adjustment_out underflow
+    if (input.type === 'adjustment_out') {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO stock_movements (
+              id, business_id, branch_id, movement_number, product_id, type,
+              quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+              reference_type, reference_id, reference_number, reason, notes,
+              business_date_key, created_by, created_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?,
+              ?,
+              COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+              CASE
+                WHEN COALESCE((SELECT allow_negative_stock FROM business_settings WHERE business_id = ? LIMIT 1), 1) = 0
+                  AND (
+                    COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0)
+                    - COALESCE((SELECT SUM(allocated_quantity - consumed_quantity) FROM device_stock_allocations WHERE business_id = ? AND branch_id = ? AND product_id = ? AND status = 'active'), 0.0)
+                  ) < ?
+                THEN NULL
+                ELSE COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?
+              END,
+              ?, 'adjustment', ?, ?, ?, ?, ?, ?, datetime('now')
+            )`
+          )
+          .bind(
+            movId,
+            businessId,
+            branchId,
+            movementNumber,
+            product.id,
+            input.type,
+            signedQty,
+            businessId,
+            branchId,
+            product.id,
+            businessId,
+            businessId,
+            branchId,
+            product.id,
+            businessId,
+            branchId,
+            product.id,
+            input.quantityChange,
+            businessId,
+            branchId,
+            product.id,
+            signedQty,
+            product.purchase_price_minor,
+            adjId,
+            adjustmentNumber,
+            input.reason,
+            input.notes || null,
+            businessDateKey,
+            userId
+          )
+      )
+    } else {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO stock_movements (
+              id, business_id, branch_id, movement_number, product_id, type,
+              quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+              reference_type, reference_id, reference_number, reason, notes,
+              business_date_key, created_by, created_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?,
+              ?,
+              COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+              COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?,
+              ?, 'adjustment', ?, ?, ?, ?, ?, ?, datetime('now')
+            )`
+          )
+          .bind(
+            movId,
+            businessId,
+            branchId,
+            movementNumber,
+            product.id,
+            input.type,
+            signedQty,
+            businessId,
+            branchId,
+            product.id,
+            businessId,
+            branchId,
+            product.id,
+            signedQty,
+            product.purchase_price_minor,
+            adjId,
+            adjustmentNumber,
+            input.reason,
+            input.notes || null,
+            businessDateKey,
+            userId
+          )
+      )
+    }
+
+    // Update inventory_balances atomically
+    statements.push(
+      this.db
+        .prepare(
+          `UPDATE inventory_balances
+           SET quantity_on_hand = quantity_on_hand + ?, updated_at = datetime('now')
+           WHERE business_id = ? AND branch_id = ? AND product_id = ?`
+        )
+        .bind(signedQty, businessId, branchId, product.id)
     )
 
     statements.push(
-      this.changeLogRepo.createChangeEventStatement({
+      this.changeLogRepo.createLiveStockChangeEventStatement({
         businessId,
         branchId,
-        resourceType: 'stock',
+        productId: product.id,
         resourceId: `${branchId}:${product.id}`,
         resourceVersion: 0,
-        operation: 'upsert',
-        payload: {
-          productId: product.id,
-          branchId,
-          quantityOnHand: newQty,
-          unit: product.unit,
-          updatedAt: new Date().toISOString(),
-        },
+        unit: product.unit,
+        updatedAt: nowIso,
         eventId: `${businessId}:stock:${branchId}:${product.id}:${movId}`,
       })
     )
@@ -309,7 +382,7 @@ export class InventoryService {
       notes: input.notes || null,
       businessDateKey,
       createdBy: userId,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     }
 
     if (idempotencyKey) {
@@ -326,7 +399,29 @@ export class InventoryService {
       )
     }
 
-    await this.repo.executeAtomicBatch(statements)
+    try {
+      await this.repo.executeAtomicBatch(statements)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('stock_movements.new_quantity')) {
+        throw new HttpError(
+          422,
+          'INSUFFICIENT_STOCK',
+          `Insufficient stock for '${product.name}' at commit time due to concurrent inventory update.`
+        )
+      }
+      throw err
+    }
+
+    const persistedMov = await this.db
+      .prepare('SELECT previous_quantity, new_quantity FROM stock_movements WHERE id = ? LIMIT 1')
+      .bind(movId)
+      .first<{ previous_quantity: number; new_quantity: number }>()
+
+    if (persistedMov) {
+      dto.previousQuantity = persistedMov.previous_quantity
+      dto.newQuantity = persistedMov.new_quantity
+    }
+
     return dto
   }
 
@@ -476,7 +571,8 @@ export class InventoryService {
     businessId: string,
     countId: string,
     userId: string,
-    idempotencyKey?: string | null
+    idempotencyKey?: string | null,
+    authorizedBranchIds?: string[]
   ): Promise<StockCountDTO> {
     let requestHash = ''
     if (idempotencyKey) {
@@ -508,16 +604,26 @@ export class InventoryService {
       throw HttpError.notFound('Stock count sheet not found.')
     }
 
+    if (authorizedBranchIds && !authorizedBranchIds.includes(count.branch_id)) {
+      throw HttpError.forbidden('You are not authorized to complete stock counts in this branch.')
+    }
+
     if (count.status !== 'draft') {
       throw HttpError.badRequest(`Cannot complete stock count: Sheet is already ${count.status}.`)
     }
 
     const itemsRes = await this.db
-      .prepare('SELECT * FROM stock_count_items WHERE count_id = ?')
+      .prepare(
+        `SELECT sci.*, p.unit
+         FROM stock_count_items sci
+         INNER JOIN products p ON sci.product_id = p.id
+         WHERE sci.count_id = ?`
+      )
       .bind(countId)
       .all<{
         id: string
         product_id: string
+        unit: string
         system_quantity: number
         physical_quantity: number | null
         variance: number | null
@@ -526,80 +632,135 @@ export class InventoryService {
 
     const items = itemsRes.results || []
     const businessDateKey = getCurrentBusinessDateKey()
+    const nowIso = new Date().toISOString()
     const statements: D1PreparedStatement[] = []
 
     // For every item with variance != 0, create stock movement and update inventory balance
     for (const item of items) {
       const variance = item.variance
       if (variance !== null && variance !== 0) {
-        const bal = await this.db
-          .prepare(
-            'SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ? LIMIT 1'
-          )
-          .bind(businessId, count.branch_id, item.product_id)
-          .first<{ quantity_on_hand: number }>()
-
-        const currentQty = bal?.quantity_on_hand ?? 0.0
-        const newQty = currentQty + variance
-
         const movId = `mov_${crypto.randomUUID()}`
         const movementNumber = `MOV-${businessDateKey.replace(/-/g, '')}-${crypto.randomUUID().substring(0, 6).toUpperCase()}`
 
         statements.push(
           this.db
             .prepare(
-              `INSERT INTO stock_movements (
-                id, business_id, branch_id, movement_number, product_id, type,
-                quantity_change, previous_quantity, new_quantity, unit_cost_minor,
-                reference_type, reference_id, reference_number, reason, notes,
-                business_date_key, created_by, created_at
-              ) VALUES (?, ?, ?, ?, ?, 'stock_count_adjustment', ?, ?, ?, ?, 'stock_count', ?, ?, 'Physical Stocktake Reconciliation', 'Variance adjustment from count', ?, ?, datetime('now'))`
+              `INSERT OR IGNORE INTO inventory_balances (
+                id, business_id, branch_id, product_id, quantity_on_hand, updated_at
+              ) VALUES (?, ?, ?, ?, 0.0, datetime('now'))`
             )
-            .bind(
-              movId,
-              businessId,
-              count.branch_id,
-              movementNumber,
-              item.product_id,
-              variance,
-              currentQty,
-              newQty,
-              item.unit_cost_minor,
-              count.id,
-              count.count_number,
-              businessDateKey,
-              userId
-            )
+            .bind(`inv_${crypto.randomUUID()}`, businessId, count.branch_id, item.product_id)
         )
+
+        if (variance < 0) {
+          statements.push(
+            this.db
+              .prepare(
+                `INSERT INTO stock_movements (
+                  id, business_id, branch_id, movement_number, product_id, type,
+                  quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+                  reference_type, reference_id, reference_number, reason, notes,
+                  business_date_key, created_by, created_at
+                ) VALUES (
+                  ?, ?, ?, ?, ?, 'stock_count_adjustment',
+                  ?,
+                  COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+                  CASE
+                    WHEN COALESCE((SELECT allow_negative_stock FROM business_settings WHERE business_id = ? LIMIT 1), 1) = 0
+                      AND (COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?) < 0
+                    THEN NULL
+                    ELSE COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?
+                  END,
+                  ?, 'stock_count', ?, ?, 'Physical Stocktake Reconciliation', 'Variance adjustment from count', ?, ?, datetime('now')
+                )`
+              )
+              .bind(
+                movId,
+                businessId,
+                count.branch_id,
+                movementNumber,
+                item.product_id,
+                variance,
+                businessId,
+                count.branch_id,
+                item.product_id,
+                businessId,
+                businessId,
+                count.branch_id,
+                item.product_id,
+                variance,
+                businessId,
+                count.branch_id,
+                item.product_id,
+                variance,
+                item.unit_cost_minor,
+                count.id,
+                count.count_number,
+                businessDateKey,
+                userId
+              )
+          )
+        } else {
+          statements.push(
+            this.db
+              .prepare(
+                `INSERT INTO stock_movements (
+                  id, business_id, branch_id, movement_number, product_id, type,
+                  quantity_change, previous_quantity, new_quantity, unit_cost_minor,
+                  reference_type, reference_id, reference_number, reason, notes,
+                  business_date_key, created_by, created_at
+                ) VALUES (
+                  ?, ?, ?, ?, ?, 'stock_count_adjustment',
+                  ?,
+                  COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0),
+                  COALESCE((SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?), 0.0) + ?,
+                  ?, 'stock_count', ?, ?, 'Physical Stocktake Reconciliation', 'Variance adjustment from count', ?, ?, datetime('now')
+                )`
+              )
+              .bind(
+                movId,
+                businessId,
+                count.branch_id,
+                movementNumber,
+                item.product_id,
+                variance,
+                businessId,
+                count.branch_id,
+                item.product_id,
+                businessId,
+                count.branch_id,
+                item.product_id,
+                variance,
+                item.unit_cost_minor,
+                count.id,
+                count.count_number,
+                businessDateKey,
+                userId
+              )
+          )
+        }
 
         statements.push(
           this.db
             .prepare(
-              `INSERT INTO inventory_balances (
-                id, business_id, branch_id, product_id, quantity_on_hand, last_counted_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-              ON CONFLICT(branch_id, product_id) DO UPDATE SET
-                quantity_on_hand = quantity_on_hand + excluded.quantity_on_hand,
-                last_counted_at = datetime('now'),
-                updated_at = datetime('now')`
+              `UPDATE inventory_balances
+               SET quantity_on_hand = quantity_on_hand + ?,
+                   last_counted_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE business_id = ? AND branch_id = ? AND product_id = ?`
             )
-            .bind(`inv_${crypto.randomUUID()}`, businessId, count.branch_id, item.product_id, variance)
+            .bind(variance, businessId, count.branch_id, item.product_id)
         )
 
         statements.push(
-          this.changeLogRepo.createChangeEventStatement({
+          this.changeLogRepo.createLiveStockChangeEventStatement({
             businessId,
             branchId: count.branch_id,
-            resourceType: 'stock',
+            productId: item.product_id,
             resourceId: `${count.branch_id}:${item.product_id}`,
             resourceVersion: 0,
-            operation: 'upsert',
-            payload: {
-              productId: item.product_id,
-              branchId: count.branch_id,
-              quantityOnHand: newQty,
-              updatedAt: new Date().toISOString(),
-            },
+            unit: item.unit,
+            updatedAt: nowIso,
             eventId: `${businessId}:stock:${count.branch_id}:${item.product_id}:${movId}`,
           })
         )
@@ -634,7 +795,18 @@ export class InventoryService {
         )
     )
 
-    await this.repo.executeAtomicBatch(statements)
+    try {
+      await this.repo.executeAtomicBatch(statements)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('stock_movements.new_quantity')) {
+        throw new HttpError(
+          422,
+          'INSUFFICIENT_STOCK',
+          'Stock count variance reduction exceeds available stock at commit time.'
+        )
+      }
+      throw err
+    }
 
     const updated = await this.repo.getCountById(businessId, countId, [count.branch_id])
     return updated!

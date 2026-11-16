@@ -448,5 +448,51 @@ describe('Cloudflare R2 Private File Storage (Step 12.6)', () => {
     const repeatRes = await worker.fetch(repeatReq, env, executionCtx)
     expect(repeatRes.status).toBe(200)
   })
+
+  it('supports expense receipts with category=expense_receipt and related_type=expense (INV-005)', async () => {
+    sqlite.prepare(`
+      INSERT INTO expense_categories (id, business_id, name, created_at)
+      VALUES ('cat_exp_test', ?, 'Supplies', datetime('now'))
+    `).run(bizA)
+    sqlite.prepare(`
+      INSERT INTO expenses (
+        id, business_id, branch_id, expense_number, category_id, amount_minor,
+        payment_method, title, business_date_key, created_by, status, created_at
+      ) VALUES (
+        'exp_test_123', ?, ?, 'EXP-001', 'cat_exp_test', 5000,
+        'cash', 'Receipt test', '2026-03-30', ?, 'posted', datetime('now')
+      )
+    `).run(bizA, branchA, ownerUserId)
+
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const blob = new Blob([pngBytes], { type: 'image/png' })
+    const form = new FormData()
+    form.append('file', blob, 'receipt.png')
+    form.append('category', 'expense_receipt')
+    form.append('relatedType', 'expense')
+    form.append('relatedId', 'exp_test_123')
+
+    const upReq = new Request('http://localhost/api/v1/files', {
+      method: 'POST',
+      headers: { Cookie: `__session=${ownerToken}`, 'X-Business-Id': bizA },
+      body: form,
+    })
+    const upRes = await worker.fetch(upReq, env, executionCtx)
+    if (upRes.status !== 201) {
+      console.error('Failed to upload file:', await upRes.text())
+    }
+    expect(upRes.status).toBe(201)
+    const upJson = (await upRes.json()) as { data: any }
+    expect(upJson.data.category).toBe('expense_receipt')
+    expect(upJson.data.relatedType).toBe('expense')
+    expect(upJson.data.relatedId).toBe('exp_test_123')
+
+    // Verify D1 record was inserted with correct category and related_type
+    const row = sqlite.prepare('SELECT category, related_type, related_id FROM files WHERE id = ?').get(upJson.data.id) as any
+    expect(row).toBeDefined()
+    expect(row.category).toBe('expense_receipt')
+    expect(row.related_type).toBe('expense')
+    expect(row.related_id).toBe('exp_test_123')
+  })
 })
 

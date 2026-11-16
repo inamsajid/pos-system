@@ -5,6 +5,7 @@ import {
   requireAuth,
   requireBusinessContext,
   requirePermission,
+  requireAnyPermission,
 } from '../../middleware/authMiddleware'
 import { resolveAuthorizedBranchIds, resolveBranchContext } from '../../auth/tenantContext'
 import { SupplierPaymentsService } from './supplierPayments.service'
@@ -17,6 +18,7 @@ import {
 export async function handleListSupplierPayments(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requireAnyPermission('disburse_payments', 'reports_view')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseSupplierPaymentQueryParams(ctx.url)
@@ -42,6 +44,7 @@ export async function handleListSupplierPayments(ctx: RequestContext): Promise<R
 export async function handleGetSupplierPayment(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requireAnyPermission('disburse_payments', 'reports_view')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const paymentId = ctx.params.id
@@ -79,6 +82,14 @@ export async function handleCreateSupplierPayment(ctx: RequestContext): Promise<
     requestedBranchId
   )
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    requestedBranchId
+  )
+
   const idempotencyKey = ctx.req.headers.get('Idempotency-Key')
   const service = new SupplierPaymentsService(ctx.env.DB)
 
@@ -87,7 +98,8 @@ export async function handleCreateSupplierPayment(ctx: RequestContext): Promise<
     branch.id,
     ctx.auth!.user.id,
     input,
-    idempotencyKey
+    idempotencyKey,
+    authorizedBranchIds
   )
 
   return jsonResponse(payment, 201, ctx.requestId)
@@ -96,6 +108,7 @@ export async function handleCreateSupplierPayment(ctx: RequestContext): Promise<
 export async function handleGetSupplierPaymentAllocations(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requireAnyPermission('disburse_payments', 'reports_view')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const paymentId = ctx.params.id
@@ -119,19 +132,29 @@ export async function handleAllocateSupplierAdvance(ctx: RequestContext): Promis
   await requireBusinessContext(ctx)
   await requirePermission('disburse_payments')(ctx)
 
+  const businessId = ctx.tenant!.business.id
   const paymentId = ctx.params.id
   const body = await parseJsonBody(ctx.req)
   const input = validateAllocateSupplierAdvanceInput(body)
+
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
 
   const idempotencyKey = ctx.req.headers.get('Idempotency-Key')
   const service = new SupplierPaymentsService(ctx.env.DB)
 
   const payment = await service.allocateAdvance(
-    ctx.tenant!.business.id,
+    businessId,
     paymentId,
     ctx.auth!.user.id,
     input,
-    idempotencyKey
+    idempotencyKey,
+    authorizedBranchIds
   )
 
   return jsonResponse(payment, 200, ctx.requestId)

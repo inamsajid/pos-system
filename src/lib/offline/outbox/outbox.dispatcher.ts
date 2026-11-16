@@ -3,13 +3,36 @@ import { CommandRegistry, commandRegistry } from './outbox.registry'
 import { categorizeError, OutboxPayloadTamperedError } from './outbox.errors'
 import { calculateNextAttempt, hasExceededMaxAttempts } from './outbox.retry'
 import { outboxEventBus } from './outbox.events'
+import { OfflineSalesRepository } from '../sales/offlineSales.repository'
 import type { CommandDispatchResult, OutboxCommandRecord } from './outbox.types'
 
 /**
- * Computes deterministic SHA-256 hash of a payload object.
+ * Recursively normalizes values so nested object keys at every depth are canonically ordered.
+ * Matches server-side canonical HMAC/request hashing guarantees.
+ */
+function normalizeCanonicalForHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeCanonicalForHash(item))
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const sorted: Record<string, unknown> = {}
+    for (const key of Object.keys(record).sort()) {
+      const prop = record[key]
+      if (prop !== undefined) {
+        sorted[key] = normalizeCanonicalForHash(prop)
+      }
+    }
+    return sorted
+  }
+  return value
+}
+
+/**
+ * Computes deterministic SHA-256 hash of a payload object (recursively across nested arrays/objects).
  */
 export async function computePayloadHash(payload: unknown): Promise<string> {
-  const canonicalJson = JSON.stringify(payload, Object.keys(payload as object).sort())
+  const canonicalJson = JSON.stringify(normalizeCanonicalForHash(payload))
   const encoder = new TextEncoder()
   const data = encoder.encode(canonicalJson)
 
@@ -35,16 +58,18 @@ export interface DispatcherOptions {
 export class OutboxDispatcher {
   private readonly repo: OutboxRepository
   private readonly registry: CommandRegistry
+  private readonly salesRepo: OfflineSalesRepository
   private isProcessing = false
 
   constructor(options: DispatcherOptions = {}) {
     this.repo = options.repository || outboxRepository
     this.registry = options.registry || commandRegistry
+    this.salesRepo = new OfflineSalesRepository(this.repo.getDb())
   }
 
   /**
-   * Main dispatch loop: claims eligible commands and dispatches them sequentially.
-   * Emits outbox events on each state transition.
+   * Main dispatch loop: claims eligible commands and dispatches them strictly FIFO.
+   * Stops and releases remaining batch leases if any command enters a queue-blocking state.
    */
   async dispatchBatch(params: {
     userId: string
@@ -65,7 +90,7 @@ export class OutboxDispatcher {
 
     this.isProcessing = true
     try {
-      // 2. Claim eligible batch using lease fencing
+      // 2. Claim eligible batch using lease fencing in FIFO order
       const claimedCommands = await this.repo.claimEligibleBatch({
         userId,
         businessId,
@@ -79,9 +104,25 @@ export class OutboxDispatcher {
 
       const results: CommandDispatchResult[] = []
 
-      for (const cmd of claimedCommands) {
+      for (let i = 0; i < claimedCommands.length; i++) {
+        const cmd = claimedCommands[i]
         const result = await this.dispatchSingle(cmd)
         results.push(result)
+
+        if (
+          result.status === 'blocked_auth' ||
+          result.status === 'conflict' ||
+          result.status === 'reconciliation_required' ||
+          result.status === 'retryable'
+        ) {
+          const remaining = claimedCommands.slice(i + 1)
+          if (remaining.length > 0) {
+            await this.repo.releaseLeases(
+              remaining.map((c) => ({ id: c.id, leaseToken: c.leaseToken }))
+            )
+          }
+          break
+        }
       }
 
       // Notify stats update
@@ -130,6 +171,7 @@ export class OutboxDispatcher {
           lastErrorCode: 'UNAUTHORIZED_COMMAND',
           lastErrorAt: new Date().toISOString(),
         })
+        await this.syncProvisionalSaleOnRejection(cmd, 'UNAUTHORIZED_COMMAND', reason)
 
         outboxEventBus.emit({
           type: 'COMMAND_REJECTED',
@@ -171,6 +213,22 @@ export class OutboxDispatcher {
       const handlerResult = await def.handler(sendingCmd)
       const nowIso = new Date().toISOString()
 
+      // Ensure provisional sale on this DB instance is synchronized cleanly
+      if (
+        typeof cmd.payload?.provisionalSaleId === 'string' &&
+        handlerResult?.data &&
+        typeof handlerResult.data === 'object'
+      ) {
+        const resObj = handlerResult.data as { saleId?: string; invoiceNumber?: string }
+        if (resObj.saleId && resObj.invoiceNumber) {
+          await this.salesRepo.acknowledgeSale(
+            cmd.payload.provisionalSaleId,
+            resObj.saleId,
+            resObj.invoiceNumber
+          )
+        }
+      }
+
       // 6. Transition to 'acknowledged'
       await this.repo.updateWithLeaseCheck(cmd.id, leaseToken, {
         status: 'acknowledged',
@@ -199,12 +257,21 @@ export class OutboxDispatcher {
 
       if (classified.category === 'retryable') {
         if (hasExceededMaxAttempts(cmd.attemptCount)) {
-          // Exceeded max retries -> transition to rejected
+          // Exceeded max retries -> transition command to rejected; mark ambiguous sale for reconciliation
+          // (NEVER roll back local quota on transport timeout because server outcome may be unknown!)
           await this.repo.updateWithLeaseCheck(cmd.id, leaseToken, {
             status: 'rejected',
             lastErrorCode: 'MAX_ATTEMPTS_EXCEEDED',
             lastErrorAt: nowIso,
           })
+
+          if (typeof cmd.payload?.provisionalSaleId === 'string') {
+            await this.salesRepo.markSaleStatus(
+              cmd.payload.provisionalSaleId,
+              'reconciliation_required',
+              'Maximum sync retry attempts exceeded; verify server status before retrying.'
+            )
+          }
 
           outboxEventBus.emit({
             type: 'COMMAND_REJECTED',
@@ -289,6 +356,14 @@ export class OutboxDispatcher {
           lastErrorAt: nowIso,
         })
 
+        if (typeof cmd.payload?.provisionalSaleId === 'string') {
+          await this.salesRepo.markSaleStatus(
+            cmd.payload.provisionalSaleId,
+            'conflict',
+            classified.message
+          )
+        }
+
         outboxEventBus.emit({
           type: 'COMMAND_CONFLICT',
           commandId: cmd.id,
@@ -313,6 +388,14 @@ export class OutboxDispatcher {
           lastErrorCode: classified.code,
           lastErrorAt: nowIso,
         })
+
+        if (typeof cmd.payload?.provisionalSaleId === 'string') {
+          await this.salesRepo.markSaleStatus(
+            cmd.payload.provisionalSaleId,
+            'reconciliation_required',
+            classified.message
+          )
+        }
 
         outboxEventBus.emit({
           type: 'COMMAND_RECONCILIATION_REQUIRED',
@@ -339,6 +422,13 @@ export class OutboxDispatcher {
         lastErrorAt: nowIso,
       })
 
+      await this.syncProvisionalSaleOnRejection(
+        cmd,
+        classified.code,
+        classified.message,
+        classified.httpStatus
+      )
+
       outboxEventBus.emit({
         type: 'COMMAND_REJECTED',
         commandId: cmd.id,
@@ -355,6 +445,29 @@ export class OutboxDispatcher {
         error: classified.message,
         errorCode: classified.code,
       }
+    }
+  }
+
+  private async syncProvisionalSaleOnRejection(
+    cmd: OutboxCommandRecord,
+    errorCode: string,
+    message: string,
+    httpStatus?: number
+  ): Promise<void> {
+    if (typeof cmd.payload?.provisionalSaleId !== 'string') return
+
+    // Only restore local quota automatically for deterministic pre-commit client/validation rejections
+    const isDeterministicPreCommitReject =
+      httpStatus === 400 ||
+      errorCode === 'VALIDATION_ERROR' ||
+      errorCode === 'PAYLOAD_TAMPERED' ||
+      errorCode === 'UNAUTHORIZED_COMMAND' ||
+      errorCode === 'BAD_REQUEST'
+
+    if (isDeterministicPreCommitReject) {
+      await this.salesRepo.rollbackSaleQuota(cmd.payload.provisionalSaleId, 'rejected', message)
+    } else {
+      await this.salesRepo.markSaleStatus(cmd.payload.provisionalSaleId, 'rejected', message)
     }
   }
 }

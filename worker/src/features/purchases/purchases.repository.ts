@@ -63,14 +63,16 @@ export class PurchasesRepository {
     const conditions: string[] = ['p.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('p.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`p.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -152,10 +154,11 @@ export class PurchasesRepository {
     purchaseId: string,
     authorizedBranchIds: string[]
   ): Promise<PurchaseDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND p.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND p.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT p.*, s.name as supplier_name, b.name as branch_name, u.name as creator_name

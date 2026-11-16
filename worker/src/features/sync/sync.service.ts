@@ -26,10 +26,12 @@ function mapDeviceToDTO(row: DeviceRow): DeviceDTO {
 }
 
 export class SyncService {
+  private readonly db: D1Database
   private readonly devicesRepo: DevicesRepository
   private readonly changeLogRepo: ChangeLogRepository
 
   constructor(db: D1Database) {
+    this.db = db
     this.devicesRepo = new DevicesRepository(db)
     this.changeLogRepo = new ChangeLogRepository(db)
   }
@@ -61,7 +63,9 @@ export class SyncService {
 
   async heartbeat(
     businessId: string,
-    installationId: string
+    installationId: string,
+    userId?: string,
+    userRole?: string
   ): Promise<{ success: boolean; status: 'active' | 'revoked' }> {
     if (!installationId) {
       throw HttpError.badRequest('installationId is required.')
@@ -70,6 +74,13 @@ export class SyncService {
     const device = await this.devicesRepo.getDeviceByInstallation(businessId, installationId)
     if (!device) {
       throw HttpError.notFound('Device is not registered in this business.')
+    }
+
+    if (userId) {
+      const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin'
+      if (!isOwnerOrAdmin && device.user_id !== userId) {
+        throw HttpError.forbidden("You are not authorized to send heartbeat for another user's device.")
+      }
     }
 
     await this.devicesRepo.recordHeartbeat(businessId, installationId)
@@ -100,12 +111,31 @@ export class SyncService {
       throw HttpError.internal('Failed to revoke device.')
     }
 
+    const nowIso = new Date().toISOString()
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE offline_authorizations
+           SET status = 'revoked', updated_at = ?
+           WHERE business_id = ? AND device_id = ? AND status = 'active'`
+        )
+        .bind(nowIso, businessId, deviceId),
+      this.db
+        .prepare(
+          `UPDATE device_stock_allocations
+           SET status = 'revoked', reconciled_at = ?, updated_at = ?
+           WHERE business_id = ? AND device_id = ? AND status = 'active'`
+        )
+        .bind(nowIso, nowIso, businessId, deviceId),
+    ])
+
     return mapDeviceToDTO(updated)
   }
 
   async pullChanges(params: {
     businessId: string
     userId: string
+    userRole?: string
     installationId: string
     cursor?: string | null
     limit?: number
@@ -114,6 +144,8 @@ export class SyncService {
   }): Promise<PullChangesResult> {
     const {
       businessId,
+      userId,
+      userRole,
       installationId,
       cursor,
       limit = 50,
@@ -129,6 +161,10 @@ export class SyncService {
     const device = await this.devicesRepo.getDeviceByInstallation(businessId, installationId)
     if (!device) {
       throw HttpError.forbidden('Device is not registered in this business.')
+    }
+    const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin'
+    if (!isOwnerOrAdmin && device.user_id !== userId) {
+      throw HttpError.forbidden("You are not authorized to pull changes using another user's device.")
     }
     if (device.status === 'revoked') {
       throw HttpError.forbidden('Device access has been revoked.')
@@ -199,7 +235,9 @@ export class SyncService {
   async ackChanges(
     businessId: string,
     installationId: string,
-    cursor: string
+    cursor: string,
+    userId?: string,
+    userRole?: string
   ): Promise<{ success: boolean; acknowledgedCursor: string }> {
     if (!installationId) {
       throw HttpError.unauthorized('Device installation ID is required.')
@@ -208,6 +246,12 @@ export class SyncService {
     const device = await this.devicesRepo.getDeviceByInstallation(businessId, installationId)
     if (!device) {
       throw HttpError.forbidden('Device is not registered.')
+    }
+    if (userId) {
+      const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin'
+      if (!isOwnerOrAdmin && device.user_id !== userId) {
+        throw HttpError.forbidden("You are not authorized to acknowledge changes using another user's device.")
+      }
     }
     if (device.status === 'revoked') {
       throw HttpError.forbidden('Device access has been revoked.')

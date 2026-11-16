@@ -4,6 +4,8 @@ import path from 'node:path'
 import type { Env } from '../../worker/src/types/environment'
 
 export function createTestD1Database(sqlite: DatabaseSync): D1Database {
+  let batchQueue: Promise<unknown> = Promise.resolve()
+
   return {
     prepare(query: string) {
       return {
@@ -48,18 +50,24 @@ export function createTestD1Database(sqlite: DatabaseSync): D1Database {
       } as unknown as D1PreparedStatement
     },
     async batch(statements: Array<{ run: () => Promise<unknown> }>) {
-      sqlite.exec('BEGIN TRANSACTION;')
-      try {
-        const results = []
-        for (const s of statements) {
-          results.push(await s.run())
+      const execBatch = async () => {
+        sqlite.exec('BEGIN TRANSACTION;')
+        try {
+          const results = []
+          for (const s of statements) {
+            results.push(await s.run())
+          }
+          sqlite.exec('COMMIT;')
+          return results
+        } catch (e) {
+          sqlite.exec('ROLLBACK;')
+          throw e
         }
-        sqlite.exec('COMMIT;')
-        return results
-      } catch (e) {
-        sqlite.exec('ROLLBACK;')
-        throw e
       }
+
+      const runPromise = batchQueue.then(execBatch, execBatch)
+      batchQueue = runPromise.catch(() => undefined)
+      return runPromise
     },
     async exec(query: string) {
       sqlite.exec(query)

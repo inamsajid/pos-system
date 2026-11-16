@@ -10,6 +10,7 @@ import {
   generateSessionToken,
   generateId,
   needsRehash,
+  sha256Hex,
 } from '../worker/src/auth/crypto'
 import {
   createSession,
@@ -193,10 +194,11 @@ describe('Authentication & Session Management', () => {
 
       const expiredTime = new Date(Date.now() - 3600 * 1000).toISOString()
       const token = generateSessionToken()
+      const tokenHash = await sha256Hex(token)
       sqlite.prepare(`
-        INSERT INTO sessions (id, user_id, token, expires_at)
-        VALUES ('sess-exp', ?, ?, ?)
-      `).run(userId, token, expiredTime)
+        INSERT INTO sessions (id, user_id, token, token_hash, expires_at)
+        VALUES ('sess-exp', ?, 'sha256:sess-exp', ?, ?)
+      `).run(userId, tokenHash, expiredTime)
 
       const validated = await validateSession(d1, token)
       expect(validated).toBeNull()

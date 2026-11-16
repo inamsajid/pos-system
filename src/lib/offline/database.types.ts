@@ -214,11 +214,16 @@ export interface LocalOfflineAuthorizationRecord {
   businessId: string
   branchId: string
   deviceId: string
+  installationId?: string
   catalogVersion: number
   pricingVersion: number
   maxTransactions: number
   maxTotalAmountMinor: number
+  usedTransactions?: number
+  usedTotalAmountMinor?: number
   allowDiscounts: boolean
+  taxRatePercent?: number
+  taxInclusive?: boolean
   status: 'active' | 'revoked' | 'expired' | 'completed'
   issuedAt: string
   expiresAt: string
@@ -230,6 +235,7 @@ export interface LocalOfflineAuthorizationRecord {
 export interface LocalDeviceAllocationRecord {
   id: string // allocationId
   authorizationId: string
+  userId: string
   businessId: string
   branchId: string
   deviceId: string

@@ -277,7 +277,7 @@ export async function handleSignOut(ctx: RequestContext): Promise<Response> {
     ctx.requestId,
     undefined,
     {
-      'Set-Cookie': clearSessionCookie(),
+      'Set-Cookie': clearSessionCookie(ctx.url.protocol === 'https:'),
     }
   )
 }

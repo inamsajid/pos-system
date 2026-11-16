@@ -102,7 +102,7 @@ export class Router {
             'Access-Control-Allow-Credentials': 'true',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
             'Access-Control-Allow-Headers':
-              'Content-Type, Authorization, X-Business-Id, X-Branch-Id, Idempotency-Key, X-Request-Id, Cookie',
+              'Content-Type, Authorization, X-Business-Id, X-Branch-Id, X-Device-Id, Idempotency-Key, X-Request-Id, Cookie',
             'Access-Control-Max-Age': '86400',
             Vary: 'Origin',
           },
@@ -115,7 +115,7 @@ export class Router {
         headers: {
           'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
           'Access-Control-Allow-Headers':
-            'Content-Type, Authorization, X-Business-Id, X-Branch-Id, Idempotency-Key, X-Request-Id, Cookie',
+            'Content-Type, Authorization, X-Business-Id, X-Branch-Id, X-Device-Id, Idempotency-Key, X-Request-Id, Cookie',
           'Access-Control-Max-Age': '86400',
         },
       })
@@ -202,6 +202,15 @@ export class Router {
       if (!headers.has('X-Request-Id')) {
         headers.set('X-Request-Id', requestId)
       }
+      if (!headers.has('X-Content-Type-Options')) {
+        headers.set('X-Content-Type-Options', 'nosniff')
+      }
+      if (!headers.has('X-Frame-Options')) {
+        headers.set('X-Frame-Options', 'DENY')
+      }
+      if (!headers.has('Referrer-Policy')) {
+        headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+      }
       if (origin && originIsAllowed) {
         headers.set('Access-Control-Allow-Origin', origin)
         headers.set('Access-Control-Allow-Credentials', 'true')
@@ -216,6 +225,15 @@ export class Router {
     } catch (err) {
       const resp = errorResponse(err, requestId)
       const headers = new Headers(resp.headers)
+      if (!headers.has('X-Content-Type-Options')) {
+        headers.set('X-Content-Type-Options', 'nosniff')
+      }
+      if (!headers.has('X-Frame-Options')) {
+        headers.set('X-Frame-Options', 'DENY')
+      }
+      if (!headers.has('Referrer-Policy')) {
+        headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+      }
       if (origin && originIsAllowed) {
         headers.set('Access-Control-Allow-Origin', origin)
         headers.set('Access-Control-Allow-Credentials', 'true')

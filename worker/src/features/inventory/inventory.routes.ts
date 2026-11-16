@@ -19,6 +19,7 @@ import {
 export async function handleListBalances(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('inventory_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseInventoryQueryParams(ctx.url)
@@ -45,6 +46,7 @@ export async function handleListBalances(ctx: RequestContext): Promise<Response>
 export async function handleGetProductBalances(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('inventory_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const productId = ctx.params.productId
@@ -66,6 +68,7 @@ export async function handleGetProductBalances(ctx: RequestContext): Promise<Res
 export async function handleListMovements(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('inventory_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseStockMovementQueryParams(ctx.url)
@@ -125,6 +128,7 @@ export async function handleRecordAdjustment(ctx: RequestContext): Promise<Respo
 export async function handleListCounts(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('inventory_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseStockCountQueryParams(ctx.url)
@@ -176,6 +180,7 @@ export async function handleCreateCount(ctx: RequestContext): Promise<Response> 
 export async function handleGetCount(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('inventory_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const countId = ctx.params.id
@@ -203,12 +208,21 @@ export async function handleCompleteCount(ctx: RequestContext): Promise<Response
   const countId = ctx.params.id
   const idempotencyKey = ctx.req.headers.get('Idempotency-Key')
 
+  const authorizedBranchIds = await resolveAuthorizedBranchIds(
+    ctx.env.DB,
+    businessId,
+    ctx.tenant!.membership.id,
+    ctx.tenant!.membership.role,
+    ctx.req.headers.get('X-Branch-Id')
+  )
+
   const service = new InventoryService(ctx.env.DB)
   const count = await service.completeCount(
     businessId,
     countId,
     ctx.auth!.user.id,
-    idempotencyKey
+    idempotencyKey,
+    authorizedBranchIds
   )
 
   return jsonResponse(count, 200, ctx.requestId)

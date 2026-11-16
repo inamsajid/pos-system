@@ -1,4 +1,4 @@
-import { generateId, generateSessionToken } from './crypto'
+import { generateId, generateSessionToken, sha256Hex } from './crypto'
 
 export const SESSION_COOKIE_NAME = '__session'
 export const DEFAULT_SESSION_MAX_AGE_SECONDS = 86400 * 7 // 7 days rolling session
@@ -6,7 +6,7 @@ export const DEFAULT_SESSION_MAX_AGE_SECONDS = 86400 * 7 // 7 days rolling sessi
 export interface SessionRecord {
   id: string
   user_id: string
-  token: string
+  token_hash: string
   expires_at: string
   ip_address: string | null
   user_agent: string | null
@@ -72,12 +72,22 @@ export function createSessionCookie(token: string, maxAgeSeconds: number = DEFAU
 /**
  * Creates an expired Set-Cookie header to clear the cookie.
  */
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+export function clearSessionCookie(isSecure: boolean = false): string {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    'Max-Age=0',
+  ]
+  if (isSecure) {
+    parts.push('Secure')
+  }
+  return parts.join('; ')
 }
 
 /**
- * Creates a new active session in D1.
+ * Creates a new active session in D1 storing only the SHA-256 digest of the token.
  */
 export async function createSession(
   db: D1Database,
@@ -88,19 +98,22 @@ export async function createSession(
 ): Promise<{ token: string; session: SessionRecord; cookie: string }> {
   const id = generateId()
   const token = generateSessionToken()
+  const tokenHash = await sha256Hex(token)
+  const tokenPlaceholder = `sha256:${id}`
   const now = new Date()
   const expiresAt = new Date(now.getTime() + DEFAULT_SESSION_MAX_AGE_SECONDS * 1000).toISOString()
   const createdAt = now.toISOString()
 
   await db
     .prepare(
-      `INSERT INTO sessions (id, user_id, token, expires_at, ip_address, user_agent, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sessions (id, user_id, token, token_hash, expires_at, ip_address, user_agent, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
       userId,
-      token,
+      tokenPlaceholder,
+      tokenHash,
       expiresAt,
       ipAddress || null,
       userAgent || null,
@@ -112,7 +125,7 @@ export async function createSession(
   const session: SessionRecord = {
     id,
     user_id: userId,
-    token,
+    token_hash: tokenHash,
     expires_at: expiresAt,
     ip_address: ipAddress || null,
     user_agent: userAgent || null,
@@ -126,19 +139,25 @@ export async function createSession(
 }
 
 /**
- * Validates a session token against D1 and verifies the user is active.
- * Rejects expired sessions and inactive/banned users.
+ * Validates a session token against D1 by comparing its SHA-256 digest and verifies the user is active.
+ * Rejects expired sessions, invalidated legacy rows without a digest, and inactive/banned users.
  */
 export async function validateSession(
   db: D1Database,
   token: string
 ): Promise<{ session: SessionRecord; user: AuthenticatedUser } | null> {
+  if (!token) {
+    return null
+  }
+
+  const tokenHash = await sha256Hex(token)
+
   const row = await db
     .prepare(
       `SELECT
          s.id AS session_id,
          s.user_id,
-         s.token,
+         s.token_hash,
          s.expires_at,
          s.ip_address,
          s.user_agent,
@@ -154,9 +173,9 @@ export async function validateSession(
          u.updated_at AS user_updated_at
        FROM sessions s
        INNER JOIN users u ON s.user_id = u.id
-       WHERE s.token = ?`
+       WHERE s.token_hash = ?`
     )
-    .bind(token)
+    .bind(tokenHash)
     .first<Record<string, unknown>>()
 
   if (!row) {
@@ -179,7 +198,7 @@ export async function validateSession(
   const session: SessionRecord = {
     id: row.session_id as string,
     user_id: row.user_id as string,
-    token: row.token as string,
+    token_hash: row.token_hash as string,
     expires_at: row.expires_at as string,
     ip_address: (row.ip_address as string) || null,
     user_agent: (row.user_agent as string) || null,
@@ -202,10 +221,14 @@ export async function validateSession(
 }
 
 /**
- * Revokes a session by deleting it from D1.
+ * Revokes a session by deleting its digest record from D1.
  */
 export async function revokeSession(db: D1Database, token: string): Promise<void> {
-  await db.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run()
+  if (!token) {
+    return
+  }
+  const tokenHash = await sha256Hex(token)
+  await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
 }
 
 /**

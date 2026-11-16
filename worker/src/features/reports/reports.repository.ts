@@ -19,6 +19,47 @@ import type {
   SupplierPayableItem,
 } from './reports.types'
 
+function appendBranchFilter(
+  conditions: string[],
+  params: unknown[],
+  column: string,
+  branchIds: string[]
+): void {
+  if (branchIds.length === 0) {
+    conditions.push('1 = 0')
+    return
+  }
+  if (branchIds.length === 1) {
+    conditions.push(`${column} = ?`)
+    params.push(branchIds[0])
+    return
+  }
+  conditions.push(`${column} IN (${branchIds.map(() => '?').join(', ')})`)
+  params.push(...branchIds)
+}
+
+function buildAggregatedInventoryJoin(
+  businessId: string,
+  branchIds: string[]
+): { joinClause: string; joinParams: unknown[] } {
+  const placeholders = branchIds.map(() => '?').join(', ')
+  return {
+    joinClause: `LEFT JOIN (
+      SELECT product_id,
+             SUM(quantity_on_hand) AS quantity_on_hand,
+             CASE
+               WHEN SUM(quantity_on_hand) > 0
+               THEN CAST(ROUND(SUM(quantity_on_hand * COALESCE(average_cost_minor, 0)) / SUM(quantity_on_hand)) AS INTEGER)
+               ELSE MAX(COALESCE(average_cost_minor, 0))
+             END AS average_cost_minor
+      FROM inventory_balances
+      WHERE business_id = ? AND branch_id IN (${placeholders})
+      GROUP BY product_id
+    ) ib ON p.id = ib.product_id`,
+    joinParams: [businessId, ...branchIds],
+  }
+}
+
 export class ReportsRepository {
   /**
    * Aggregates sales metrics for the dashboard.
@@ -27,10 +68,21 @@ export class ReportsRepository {
   async getDashboardSalesMetrics(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<DashboardSalesMetrics> {
+    if (branchIds.length === 0) {
+      return {
+        totalCompletedSalesMinor: 0,
+        salesCount: 0,
+        netSalesMinor: 0,
+        discountTotalMinor: 0,
+        taxTotalMinor: 0,
+        averageTransactionValueMinor: 0,
+      }
+    }
+
     const conditions = [
       'business_id = ?',
       "status IN ('completed', 'partially_returned')",
@@ -38,11 +90,7 @@ export class ReportsRepository {
       'business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'branch_id', branchIds)
 
     const row = await d1
       .prepare(
@@ -84,10 +132,14 @@ export class ReportsRepository {
   async getDashboardCogsMinor(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<number> {
+    if (branchIds.length === 0) {
+      return 0
+    }
+
     const conditions = [
       's.business_id = ?',
       "s.status IN ('completed', 'partially_returned')",
@@ -95,11 +147,7 @@ export class ReportsRepository {
       's.business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('s.branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 's.branch_id', branchIds)
 
     const row = await d1
       .prepare(
@@ -116,22 +164,68 @@ export class ReportsRepository {
   }
 
   /**
+   * Aggregates posted expenses for the dashboard.
+   */
+  async getDashboardExpensesMinor(
+    d1: D1Database,
+    businessId: string,
+    branchIds: string[],
+    fromDate: string,
+    toDate: string
+  ): Promise<number> {
+    if (branchIds.length === 0) {
+      return 0
+    }
+
+    const conditions = [
+      'e.business_id = ?',
+      "e.status = 'posted'",
+      'e.business_date_key >= ?',
+      'e.business_date_key <= ?',
+    ]
+    const params: unknown[] = [businessId, fromDate, toDate]
+    appendBranchFilter(conditions, params, 'e.branch_id', branchIds)
+
+    const row = await d1
+      .prepare(
+        `SELECT COALESCE(SUM(e.amount_minor), 0) AS total_expenses_minor
+         FROM expenses e
+         WHERE ${conditions.join(' AND ')}`
+      )
+      .bind(...params)
+      .first<{ total_expenses_minor: number }>()
+
+    return row?.total_expenses_minor ?? 0
+  }
+
+  /**
    * Aggregates collections metrics for the dashboard.
    */
   async getDashboardCollectionsMetrics(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<DashboardCollectionsMetrics> {
-    const pConditions = ['p.business_id = ?', 'p.business_date_key >= ?', 'p.business_date_key <= ?']
-    const pParams: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      pConditions.push('p.branch_id = ?')
-      pParams.push(branchId)
+    if (branchIds.length === 0) {
+      return {
+        totalCollectedMinor: 0,
+        cashCollectedMinor: 0,
+        digitalCollectedMinor: 0,
+        outstandingReceivablesMinor: 0,
+        unallocatedCustomerAdvancesMinor: 0,
+      }
     }
+
+    const pConditions = [
+      'p.business_id = ?',
+      "p.status = 'posted'",
+      'p.business_date_key >= ?',
+      'p.business_date_key <= ?',
+    ]
+    const pParams: unknown[] = [businessId, fromDate, toDate]
+    appendBranchFilter(pConditions, pParams, 'p.branch_id', branchIds)
 
     const totalsRow = await d1
       .prepare(
@@ -159,10 +253,7 @@ export class ReportsRepository {
     // Outstanding customer receivables
     const sConditions = ['business_id = ?', "status = 'completed'", 'remaining_balance_minor > 0']
     const sParams: unknown[] = [businessId]
-    if (branchId) {
-      sConditions.push('branch_id = ?')
-      sParams.push(branchId)
-    }
+    appendBranchFilter(sConditions, sParams, 'branch_id', branchIds)
 
     const receivablesRow = await d1
       .prepare(
@@ -188,10 +279,21 @@ export class ReportsRepository {
   async getDashboardPurchasesMetrics(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<DashboardPurchasesMetrics> {
+    if (branchIds.length === 0) {
+      return {
+        totalPurchasesMinor: 0,
+        purchaseCount: 0,
+        goodsReceivedValueMinor: 0,
+        outstandingPayablesMinor: 0,
+        supplierPaymentsMinor: 0,
+        unallocatedSupplierAdvancesMinor: 0,
+      }
+    }
+
     const poConditions = [
       'business_id = ?',
       "status IN ('ordered', 'partially_received', 'received')",
@@ -199,10 +301,7 @@ export class ReportsRepository {
       'purchase_date_key <= ?',
     ]
     const poParams: unknown[] = [businessId, fromDate, toDate]
-    if (branchId) {
-      poConditions.push('branch_id = ?')
-      poParams.push(branchId)
-    }
+    appendBranchFilter(poConditions, poParams, 'branch_id', branchIds)
 
     const poRow = await d1
       .prepare(
@@ -222,10 +321,7 @@ export class ReportsRepository {
       'gr.business_date_key <= ?',
     ]
     const grParams: unknown[] = [businessId, fromDate, toDate]
-    if (branchId) {
-      grConditions.push('gr.branch_id = ?')
-      grParams.push(branchId)
-    }
+    appendBranchFilter(grConditions, grParams, 'gr.branch_id', branchIds)
 
     const grRow = await d1
       .prepare(
@@ -245,10 +341,7 @@ export class ReportsRepository {
       'sp.business_date_key <= ?',
     ]
     const spParams: unknown[] = [businessId, fromDate, toDate]
-    if (branchId) {
-      spConditions.push('sp.branch_id = ?')
-      spParams.push(branchId)
-    }
+    appendBranchFilter(spConditions, spParams, 'sp.branch_id', branchIds)
 
     const spRow = await d1
       .prepare(
@@ -261,17 +354,14 @@ export class ReportsRepository {
       .bind(...spParams)
       .first<{ supplier_payments_minor: number; unallocated_supplier_advances_minor: number }>()
 
-    // Outstanding supplier payables
+    // Outstanding supplier payables (strictly recognized received liabilities minus payments)
     const payablesConditions = [
       'business_id = ?',
-      "status IN ('ordered', 'partially_received', 'received')",
+      "status IN ('partially_received', 'received')",
       'total_amount_minor > paid_amount_minor',
     ]
     const payablesParams: unknown[] = [businessId]
-    if (branchId) {
-      payablesConditions.push('branch_id = ?')
-      payablesParams.push(branchId)
-    }
+    appendBranchFilter(payablesConditions, payablesParams, 'branch_id', branchIds)
 
     const payablesRow = await d1
       .prepare(
@@ -299,15 +389,18 @@ export class ReportsRepository {
   async getDashboardInventoryMetrics(
     d1: D1Database,
     businessId: string,
-    branchId: string | null
+    branchIds: string[]
   ): Promise<DashboardInventoryMetrics> {
-    const joinParams: unknown[] = []
-    let joinClause = 'LEFT JOIN inventory_balances ib ON p.id = ib.product_id'
-    if (branchId) {
-      joinClause += ' AND ib.branch_id = ?'
-      joinParams.push(branchId)
+    if (branchIds.length === 0) {
+      return {
+        totalTrackedProducts: 0,
+        lowStockProductsCount: 0,
+        outOfStockProductsCount: 0,
+        totalQuantityOnHand: 0,
+      }
     }
 
+    const { joinClause, joinParams } = buildAggregatedInventoryJoin(businessId, branchIds)
     const conditions = ['p.business_id = ?', "p.status = 'active'"]
     const whereParams: unknown[] = [businessId]
     const allParams = [...joinParams, ...whereParams]
@@ -345,17 +438,32 @@ export class ReportsRepository {
   async getSalesSummary(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
-    toDate: string
+    toDate: string,
+    displayBranchId: string | null = null
   ): Promise<SalesSummaryDTO> {
+    if (branchIds.length === 0) {
+      return {
+        fromDate,
+        toDate,
+        branchId: displayBranchId,
+        completedSalesCount: 0,
+        voidedSalesCount: 0,
+        grossSalesMinor: 0,
+        discountTotalMinor: 0,
+        netSalesMinor: 0,
+        taxTotalMinor: 0,
+        totalAmountMinor: 0,
+        amountPaidMinor: 0,
+        remainingBalanceMinor: 0,
+        averageSaleValueMinor: 0,
+      }
+    }
+
     const conditions = ['business_id = ?', 'business_date_key >= ?', 'business_date_key <= ?']
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'branch_id', branchIds)
 
     const row = await d1
       .prepare(
@@ -392,7 +500,7 @@ export class ReportsRepository {
     return {
       fromDate,
       toDate,
-      branchId,
+      branchId: displayBranchId,
       completedSalesCount: completed,
       voidedSalesCount: row?.voided_count ?? 0,
       grossSalesMinor: row?.gross_sales_minor ?? 0,
@@ -412,11 +520,15 @@ export class ReportsRepository {
   async getSalesTrends(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string,
     interval: 'daily' | 'monthly' = 'daily'
   ): Promise<SalesTrendPoint[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
     const conditions = [
       'business_id = ?',
       "status IN ('completed', 'partially_returned')",
@@ -424,11 +536,7 @@ export class ReportsRepository {
       'business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'branch_id', branchIds)
 
     const groupExpression =
       interval === 'monthly'
@@ -478,12 +586,16 @@ export class ReportsRepository {
   async getSalesByProduct(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string,
     limit = 50,
     categoryId?: string
   ): Promise<SalesByProductItem[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
     const conditions = [
       's.business_id = ?',
       "s.status IN ('completed', 'partially_returned')",
@@ -491,11 +603,7 @@ export class ReportsRepository {
       's.business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('s.branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 's.branch_id', branchIds)
 
     if (categoryId) {
       conditions.push('p.category_id = ?')
@@ -552,10 +660,14 @@ export class ReportsRepository {
   async getSalesByCategory(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<SalesByCategoryItem[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
     const conditions = [
       's.business_id = ?',
       "s.status IN ('completed', 'partially_returned')",
@@ -563,11 +675,7 @@ export class ReportsRepository {
       's.business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('s.branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 's.branch_id', branchIds)
 
     const rows = await d1
       .prepare(
@@ -609,17 +717,33 @@ export class ReportsRepository {
   async getPaymentsSummary(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
-    toDate: string
+    toDate: string,
+    displayBranchId: string | null = null
   ): Promise<PaymentsSummaryDTO> {
-    const conditions = ['p.business_id = ?', 'p.business_date_key >= ?', 'p.business_date_key <= ?']
-    const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('p.branch_id = ?')
-      params.push(branchId)
+    if (branchIds.length === 0) {
+      return {
+        fromDate,
+        toDate,
+        branchId: displayBranchId,
+        totalCollectedMinor: 0,
+        totalPaymentsCount: 0,
+        cashCollectedMinor: 0,
+        digitalCollectedMinor: 0,
+        allocatedMinor: 0,
+        unallocatedAdvanceMinor: 0,
+      }
     }
+
+    const conditions = [
+      'p.business_id = ?',
+      "p.status = 'posted'",
+      'p.business_date_key >= ?',
+      'p.business_date_key <= ?',
+    ]
+    const params: unknown[] = [businessId, fromDate, toDate]
+    appendBranchFilter(conditions, params, 'p.branch_id', branchIds)
 
     const pRow = await d1
       .prepare(
@@ -655,7 +779,7 @@ export class ReportsRepository {
     return {
       fromDate,
       toDate,
-      branchId,
+      branchId: displayBranchId,
       totalCollectedMinor: totalCollected,
       totalPaymentsCount: pRow?.total_payments_count ?? 0,
       cashCollectedMinor: mRow?.cash_collected_minor ?? 0,
@@ -671,17 +795,22 @@ export class ReportsRepository {
   async getPaymentsByMethod(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string
   ): Promise<PaymentByMethodItem[]> {
-    const conditions = ['p.business_id = ?', 'p.business_date_key >= ?', 'p.business_date_key <= ?']
-    const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('p.branch_id = ?')
-      params.push(branchId)
+    if (branchIds.length === 0) {
+      return []
     }
+
+    const conditions = [
+      'p.business_id = ?',
+      "p.status = 'posted'",
+      'p.business_date_key >= ?',
+      'p.business_date_key <= ?',
+    ]
+    const params: unknown[] = [businessId, fromDate, toDate]
+    appendBranchFilter(conditions, params, 'p.branch_id', branchIds)
 
     const rows = await d1
       .prepare(
@@ -714,17 +843,29 @@ export class ReportsRepository {
   async getPurchasesSummary(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
-    toDate: string
+    toDate: string,
+    displayBranchId: string | null = null
   ): Promise<PurchasesSummaryDTO> {
+    if (branchIds.length === 0) {
+      return {
+        fromDate,
+        toDate,
+        branchId: displayBranchId,
+        totalPurchasesMinor: 0,
+        totalPurchasesCount: 0,
+        orderedPurchasesCount: 0,
+        receivedPurchasesCount: 0,
+        cancelledPurchasesCount: 0,
+        paidAmountMinor: 0,
+        outstandingPayableMinor: 0,
+      }
+    }
+
     const conditions = ['business_id = ?', 'purchase_date_key >= ?', 'purchase_date_key <= ?']
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'branch_id', branchIds)
 
     const row = await d1
       .prepare(
@@ -735,7 +876,7 @@ export class ReportsRepository {
            COUNT(CASE WHEN status IN ('partially_received', 'received') THEN 1 END) AS received_count,
            COUNT(CASE WHEN status = 'cancelled' THEN 1 END) AS cancelled_count,
            COALESCE(SUM(CASE WHEN status != 'cancelled' THEN paid_amount_minor ELSE 0 END), 0) AS paid_amount_minor,
-           COALESCE(SUM(CASE WHEN status != 'cancelled' THEN (total_amount_minor - paid_amount_minor) ELSE 0 END), 0) AS outstanding_payable_minor
+           COALESCE(SUM(CASE WHEN status IN ('partially_received', 'received') THEN (total_amount_minor - paid_amount_minor) ELSE 0 END), 0) AS outstanding_payable_minor
          FROM purchases
          WHERE ${conditions.join(' AND ')}`
       )
@@ -753,7 +894,7 @@ export class ReportsRepository {
     return {
       fromDate,
       toDate,
-      branchId,
+      branchId: displayBranchId,
       totalPurchasesMinor: row?.total_purchases_minor ?? 0,
       totalPurchasesCount: row?.total_count ?? 0,
       orderedPurchasesCount: row?.ordered_count ?? 0,
@@ -770,11 +911,15 @@ export class ReportsRepository {
   async getPurchasesTrends(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string,
     interval: 'daily' | 'monthly' = 'daily'
   ): Promise<PurchasesTrendPoint[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
     const conditions = [
       'business_id = ?',
       "status != 'cancelled'",
@@ -782,11 +927,7 @@ export class ReportsRepository {
       'purchase_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'branch_id', branchIds)
 
     const groupExpression =
       interval === 'monthly'
@@ -826,8 +967,25 @@ export class ReportsRepository {
    */
   async getSupplierPayables(
     d1: D1Database,
-    businessId: string
+    businessId: string,
+    branchIds: string[]
   ): Promise<SupplierPayableItem[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
+    const poConditions = [
+      'business_id = ?',
+      "status IN ('partially_received', 'received')",
+      'total_amount_minor > paid_amount_minor',
+    ]
+    const poParams: unknown[] = [businessId]
+    appendBranchFilter(poConditions, poParams, 'branch_id', branchIds)
+
+    const spConditions = ['business_id = ?', 'unallocated_amount_minor > 0']
+    const spParams: unknown[] = [businessId]
+    appendBranchFilter(spConditions, spParams, 'branch_id', branchIds)
+
     const rows = await d1
       .prepare(
         `SELECT
@@ -841,20 +999,20 @@ export class ReportsRepository {
          LEFT JOIN (
            SELECT supplier_id, SUM(total_amount_minor - paid_amount_minor) AS total_unpaid
            FROM purchases
-           WHERE business_id = ? AND status != 'cancelled' AND total_amount_minor > paid_amount_minor
+           WHERE ${poConditions.join(' AND ')}
            GROUP BY supplier_id
          ) po ON s.id = po.supplier_id
          LEFT JOIN (
            SELECT supplier_id, SUM(unallocated_amount_minor) AS total_advance
            FROM supplier_payments
-           WHERE business_id = ? AND unallocated_amount_minor > 0
+           WHERE ${spConditions.join(' AND ')}
            GROUP BY supplier_id
          ) sp ON s.id = sp.supplier_id
          WHERE s.business_id = ?
            AND (COALESCE(po.total_unpaid, 0) > 0 OR COALESCE(sp.total_advance, 0) > 0)
          ORDER BY balance_minor DESC`
       )
-      .bind(businessId, businessId, businessId)
+      .bind(...poParams, ...spParams, businessId)
       .all<{
         supplier_id: string
         supplier_name: string
@@ -880,15 +1038,23 @@ export class ReportsRepository {
   async getInventorySummary(
     d1: D1Database,
     businessId: string,
-    branchId: string | null
+    branchIds: string[],
+    displayBranchId: string | null = null
   ): Promise<InventorySummaryDTO> {
-    const joinParams: unknown[] = []
-    let joinClause = 'LEFT JOIN inventory_balances ib ON p.id = ib.product_id'
-    if (branchId) {
-      joinClause += ' AND ib.branch_id = ?'
-      joinParams.push(branchId)
+    if (branchIds.length === 0) {
+      return {
+        branchId: displayBranchId,
+        totalTrackedProducts: 0,
+        inStockCount: 0,
+        lowStockCount: 0,
+        outOfStockCount: 0,
+        totalQuantityOnHand: 0,
+        totalValuationMinor: 0,
+        costMethod: 'perpetual_cost_baseline',
+      }
     }
 
+    const { joinClause, joinParams } = buildAggregatedInventoryJoin(businessId, branchIds)
     const conditions = ['p.business_id = ?', "p.status = 'active'"]
     const whereParams: unknown[] = [businessId]
     const allParams = [...joinParams, ...whereParams]
@@ -901,7 +1067,7 @@ export class ReportsRepository {
            COUNT(DISTINCT CASE WHEN COALESCE(ib.quantity_on_hand, 0) <= p.low_stock_threshold AND COALESCE(ib.quantity_on_hand, 0) > 0 THEN p.id END) AS low_stock_count,
            COUNT(DISTINCT CASE WHEN COALESCE(ib.quantity_on_hand, 0) <= 0 THEN p.id END) AS out_of_stock_count,
            COALESCE(SUM(ib.quantity_on_hand), 0) AS total_quantity_on_hand,
-           COALESCE(SUM(CAST(ROUND(CASE WHEN ib.quantity_on_hand > 0 THEN ib.quantity_on_hand * p.purchase_price_minor ELSE 0 END) AS INTEGER)), 0) AS total_valuation_minor
+           COALESCE(SUM(CAST(ROUND(CASE WHEN ib.quantity_on_hand > 0 THEN ib.quantity_on_hand * COALESCE(NULLIF(ib.average_cost_minor, 0), p.purchase_price_minor, 0) ELSE 0 END) AS INTEGER)), 0) AS total_valuation_minor
          FROM products p
          ${joinClause}
          WHERE ${conditions.join(' AND ')}`
@@ -917,7 +1083,7 @@ export class ReportsRepository {
       }>()
 
     return {
-      branchId,
+      branchId: displayBranchId,
       totalTrackedProducts: row?.total_tracked_products ?? 0,
       inStockCount: row?.in_stock_count ?? 0,
       lowStockCount: row?.low_stock_count ?? 0,
@@ -934,7 +1100,7 @@ export class ReportsRepository {
   async getInventoryMovements(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     fromDate: string,
     toDate: string,
     productId?: string,
@@ -942,17 +1108,17 @@ export class ReportsRepository {
     limit = 50,
     offset = 0
   ): Promise<{ items: InventoryMovementItem[]; total: number }> {
+    if (branchIds.length === 0) {
+      return { items: [], total: 0 }
+    }
+
     const conditions = [
       'sm.business_id = ?',
       'sm.business_date_key >= ?',
       'sm.business_date_key <= ?',
     ]
     const params: unknown[] = [businessId, fromDate, toDate]
-
-    if (branchId) {
-      conditions.push('sm.branch_id = ?')
-      params.push(branchId)
-    }
+    appendBranchFilter(conditions, params, 'sm.branch_id', branchIds)
 
     if (productId) {
       conditions.push('sm.product_id = ?')
@@ -1040,15 +1206,22 @@ export class ReportsRepository {
   async getLowStockProducts(
     d1: D1Database,
     businessId: string,
-    branchId: string | null,
+    branchIds: string[],
     limit = 50,
     offset = 0
   ): Promise<{ items: LowStockProductItem[]; total: number }> {
+    if (branchIds.length === 0) {
+      return { items: [], total: 0 }
+    }
+
     const joinParams: unknown[] = []
     let joinClause = 'LEFT JOIN inventory_balances ib ON p.id = ib.product_id'
-    if (branchId) {
+    if (branchIds.length === 1) {
       joinClause += ' AND ib.branch_id = ?'
-      joinParams.push(branchId)
+      joinParams.push(branchIds[0])
+    } else {
+      joinClause += ` AND ib.branch_id IN (${branchIds.map(() => '?').join(', ')})`
+      joinParams.push(...branchIds)
     }
 
     const conditions = [
@@ -1126,15 +1299,13 @@ export class ReportsRepository {
   async getInventoryValuation(
     d1: D1Database,
     businessId: string,
-    branchId: string | null
+    branchIds: string[]
   ): Promise<InventoryValuationItem[]> {
-    const joinParams: unknown[] = []
-    let joinClause = 'LEFT JOIN inventory_balances ib ON p.id = ib.product_id'
-    if (branchId) {
-      joinClause += ' AND ib.branch_id = ?'
-      joinParams.push(branchId)
+    if (branchIds.length === 0) {
+      return []
     }
 
+    const { joinClause, joinParams } = buildAggregatedInventoryJoin(businessId, branchIds)
     const conditions = ['p.business_id = ?', "p.status = 'active'"]
     const whereParams: unknown[] = [businessId]
     const allParams = [...joinParams, ...whereParams]
@@ -1146,8 +1317,8 @@ export class ReportsRepository {
            p.name AS product_name,
            p.sku,
            COALESCE(ib.quantity_on_hand, 0) AS quantity_on_hand,
-           p.purchase_price_minor AS unit_cost_minor,
-           CAST(ROUND(CASE WHEN COALESCE(ib.quantity_on_hand, 0) > 0 THEN ib.quantity_on_hand * p.purchase_price_minor ELSE 0 END) AS INTEGER) AS valuation_minor
+           COALESCE(NULLIF(ib.average_cost_minor, 0), p.purchase_price_minor, 0) AS unit_cost_minor,
+           CAST(ROUND(CASE WHEN COALESCE(ib.quantity_on_hand, 0) > 0 THEN ib.quantity_on_hand * COALESCE(NULLIF(ib.average_cost_minor, 0), p.purchase_price_minor, 0) ELSE 0 END) AS INTEGER) AS valuation_minor
          FROM products p
          ${joinClause}
          WHERE ${conditions.join(' AND ')}
@@ -1178,8 +1349,21 @@ export class ReportsRepository {
    */
   async getCustomerReceivables(
     d1: D1Database,
-    businessId: string
+    businessId: string,
+    branchIds: string[]
   ): Promise<CustomerReceivableItem[]> {
+    if (branchIds.length === 0) {
+      return []
+    }
+
+    const sConditions = ['business_id = ?', "status = 'completed'", 'remaining_balance_minor > 0']
+    const sParams: unknown[] = [businessId]
+    appendBranchFilter(sConditions, sParams, 'branch_id', branchIds)
+
+    const pConditions = ['business_id = ?', 'unallocated_amount_minor > 0']
+    const pParams: unknown[] = [businessId]
+    appendBranchFilter(pConditions, pParams, 'branch_id', branchIds)
+
     const rows = await d1
       .prepare(
         `SELECT
@@ -1192,20 +1376,20 @@ export class ReportsRepository {
          LEFT JOIN (
            SELECT customer_id, SUM(remaining_balance_minor) AS total_unpaid
            FROM sales
-           WHERE business_id = ? AND status = 'completed' AND remaining_balance_minor > 0
+           WHERE ${sConditions.join(' AND ')}
            GROUP BY customer_id
          ) s ON c.id = s.customer_id
          LEFT JOIN (
            SELECT customer_id, SUM(unallocated_amount_minor) AS total_advance
            FROM payments
-           WHERE business_id = ? AND unallocated_amount_minor > 0
+           WHERE ${pConditions.join(' AND ')}
            GROUP BY customer_id
          ) p ON c.id = p.customer_id
          WHERE c.business_id = ?
            AND (COALESCE(s.total_unpaid, 0) > 0 OR COALESCE(p.total_advance, 0) > 0)
          ORDER BY balance_minor DESC`
       )
-      .bind(businessId, businessId, businessId)
+      .bind(...sParams, ...pParams, businessId)
       .all<{
         customer_id: string
         customer_name: string

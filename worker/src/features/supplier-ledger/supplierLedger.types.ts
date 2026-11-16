@@ -54,6 +54,7 @@ export interface SupplierFinancialSummaryDTO {
   currentPayableMinor: number
   totalBilledMinor: number
   totalPaidMinor: number
+  unallocatedAdvanceMinor: number
   openPurchasesCount: number
   earliestUnpaidPurchaseDate: string | null
 }

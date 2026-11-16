@@ -4,6 +4,7 @@ import { parseJsonBody } from '../../lib/validation'
 import {
   requireAuth,
   requireBusinessContext,
+  requirePermission,
 } from '../../middleware/authMiddleware'
 import { CustomersService } from './customers.service'
 import {
@@ -15,6 +16,7 @@ import {
 export async function handleListCustomers(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseCustomerQueryParams(ctx.url)
@@ -33,6 +35,7 @@ export async function handleListCustomers(ctx: RequestContext): Promise<Response
 export async function handleGetCustomer(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const customerId = ctx.params.id
@@ -46,6 +49,7 @@ export async function handleGetCustomer(ctx: RequestContext): Promise<Response> 
 export async function handleCreateCustomer(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const body = await parseJsonBody(ctx.req)
@@ -60,6 +64,7 @@ export async function handleCreateCustomer(ctx: RequestContext): Promise<Respons
 export async function handleUpdateCustomer(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const customerId = ctx.params.id
@@ -75,6 +80,7 @@ export async function handleUpdateCustomer(ctx: RequestContext): Promise<Respons
 export async function handleUpdateCustomerStatus(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const customerId = ctx.params.id
@@ -93,6 +99,7 @@ export async function handleUpdateCustomerStatus(ctx: RequestContext): Promise<R
 export async function handleArchiveCustomer(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('customer_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const customerId = ctx.params.id

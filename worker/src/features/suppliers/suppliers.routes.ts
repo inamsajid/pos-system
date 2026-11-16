@@ -4,6 +4,7 @@ import { parseJsonBody } from '../../lib/validation'
 import {
   requireAuth,
   requireBusinessContext,
+  requirePermission,
 } from '../../middleware/authMiddleware'
 import { SuppliersService } from './suppliers.service'
 import {
@@ -16,6 +17,7 @@ import {
 export async function handleListSuppliers(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const filters = parseSupplierQueryParams(ctx.url)
@@ -34,6 +36,7 @@ export async function handleListSuppliers(ctx: RequestContext): Promise<Response
 export async function handleGetSupplier(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id
@@ -47,6 +50,7 @@ export async function handleGetSupplier(ctx: RequestContext): Promise<Response> 
 export async function handleCreateSupplier(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const body = await parseJsonBody(ctx.req)
@@ -61,6 +65,7 @@ export async function handleCreateSupplier(ctx: RequestContext): Promise<Respons
 export async function handleUpdateSupplier(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id
@@ -76,6 +81,7 @@ export async function handleUpdateSupplier(ctx: RequestContext): Promise<Respons
 export async function handleUpdateSupplierStatus(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id
@@ -94,6 +100,7 @@ export async function handleUpdateSupplierStatus(ctx: RequestContext): Promise<R
 export async function handleArchiveSupplier(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id
@@ -107,6 +114,7 @@ export async function handleArchiveSupplier(ctx: RequestContext): Promise<Respon
 export async function handleListSupplierProducts(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_read')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id
@@ -120,6 +128,7 @@ export async function handleListSupplierProducts(ctx: RequestContext): Promise<R
 export async function handleAddSupplierProduct(ctx: RequestContext): Promise<Response> {
   await requireAuth(ctx)
   await requireBusinessContext(ctx)
+  await requirePermission('supplier_write')(ctx)
 
   const businessId = ctx.tenant!.business.id
   const supplierId = ctx.params.id

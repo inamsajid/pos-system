@@ -298,12 +298,9 @@ describe('Goods Receipts & Inward Stock APIs', () => {
     )
     expect(recRes.status).toBe(201)
 
-    // Verify Product A purchase price updated to 125,000 minor
-    const prod = sqlite.prepare('SELECT purchase_price_minor FROM products WHERE id = ?').get(prodAId) as { purchase_price_minor: number }
-    expect(prod.purchase_price_minor).toBe(125000)
-
-    // Verify stock balance is now 20
-    const bal = sqlite.prepare('SELECT quantity_on_hand FROM inventory_balances WHERE business_id = ? AND product_id = ?').get(businessId, prodAId) as { quantity_on_hand: number }
+    // Verify branch inventory balance has updated average_cost_minor to 125,000 minor
+    const bal = sqlite.prepare('SELECT quantity_on_hand, average_cost_minor FROM inventory_balances WHERE business_id = ? AND branch_id = ? AND product_id = ?').get(businessId, branchId, prodAId) as { quantity_on_hand: number; average_cost_minor: number }
+    expect(bal.average_cost_minor).toBe(125000)
     expect(bal.quantity_on_hand).toBe(20.0)
   })
 

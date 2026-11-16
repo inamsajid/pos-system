@@ -15,6 +15,7 @@ import { Card } from '../../../components/ui/Card'
 import { Button } from '../../../components/ui/Button'
 import { Badge } from '../../../components/ui/Badge'
 import { useAuth } from '../../auth/context/useAuth'
+import { hasPermission } from '../../../lib/permissions'
 import { useSettings } from '../hooks/useSettings'
 import type { UpdateBusinessSettingsInput } from '../services/settingsService'
 
@@ -22,7 +23,7 @@ type SettingsTab = 'profile' | 'regional' | 'tax' | 'receipt' | 'preferences'
 
 export function SettingsPage() {
   const { activeBusiness } = useAuth()
-  const { settings, isLoading, isError, error, updateSettings, isUpdating } = useSettings()
+  const { settings, isLoading, isError, error, refetch, updateSettings, isUpdating } = useSettings()
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile')
   const [formData, setFormData] = useState<UpdateBusinessSettingsInput>({})
@@ -52,8 +53,8 @@ export function SettingsPage() {
     }
   }, [settings])
 
-  const userRole = activeBusiness?.role || 'owner'
-  const canEdit = userRole === 'owner' || userRole === 'admin'
+  const userRole = activeBusiness?.role ?? null
+  const canEdit = hasPermission(userRole, 'manage_settings')
 
   const handleChange = (field: keyof UpdateBusinessSettingsInput, value: unknown) => {
     setFormData((prev) => ({
@@ -95,10 +96,15 @@ export function SettingsPage() {
     return (
       <div className="p-8">
         <PageHeader title="Business Settings" description="Configure your business workspace." />
-        <div className="rounded-lg border border-rose-200 bg-rose-50 p-6 text-rose-800">
-          <div className="flex items-center gap-3">
-            <AlertCircle className="h-5 w-5 text-rose-600" />
-            <h3 className="font-semibold">Unable to load business settings</h3>
+        <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-6 text-rose-800">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="h-5 w-5 text-rose-600" />
+              <h3 className="font-semibold">Unable to load business settings</h3>
+            </div>
+            <Button variant="secondary" onClick={() => void refetch()}>
+              Retry
+            </Button>
           </div>
           <p className="mt-2 text-sm text-rose-700">
             {error instanceof Error ? error.message : 'An error occurred while fetching settings from the server.'}

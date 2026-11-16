@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '../../../api/queryKeys'
 import { staffService } from '../services/staffService'
 import type { InviteStaffDraft, StaffRole } from '../types/staff.types'
 
@@ -6,7 +7,7 @@ export function useStaffMutations() {
   const queryClient = useQueryClient()
 
   const invalidateStaff = () => {
-    void queryClient.invalidateQueries({ queryKey: ['staff'] })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.staff.all })
     void queryClient.invalidateQueries({ queryKey: ['staffMember'] })
     void queryClient.invalidateQueries({ queryKey: ['staffInvitations'] })
   }
@@ -52,4 +53,3 @@ export function useStaffMutations() {
     reactivateStaff,
   }
 }
-

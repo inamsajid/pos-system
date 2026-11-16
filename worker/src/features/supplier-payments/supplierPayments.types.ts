@@ -42,6 +42,14 @@ export interface SupplierPaymentAllocationDTO {
   allocatedAt: string
 }
 
+export interface SupplierPaymentMethodAllocationDTO {
+  id: string
+  paymentId: string
+  method: SupplierPaymentMethod
+  amountMinor: number
+  reference?: string | null
+}
+
 export interface SupplierPaymentDTO {
   id: string
   businessId: string
@@ -55,6 +63,7 @@ export interface SupplierPaymentDTO {
   unallocatedAmountMinor: number
   method: SupplierPaymentMethod
   reference: string | null
+  paymentMethods?: SupplierPaymentMethodAllocationDTO[]
   notes: string | null
   businessDateKey: string
   paidBy: string
@@ -69,12 +78,19 @@ export interface SupplierPaymentAllocationInput {
   amountMinor: number
 }
 
+export interface SupplierPaymentMethodInput {
+  method: SupplierPaymentMethod
+  amountMinor: number
+  reference?: string | null
+}
+
 export interface CreateSupplierPaymentInput {
   branchId?: string
   supplierId: string
   amountMinor: number
-  method: SupplierPaymentMethod
+  method?: SupplierPaymentMethod
   reference?: string | null
+  paymentMethods?: SupplierPaymentMethodInput[]
   notes?: string | null
   allocations?: SupplierPaymentAllocationInput[]
 }

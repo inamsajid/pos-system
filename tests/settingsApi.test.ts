@@ -118,10 +118,10 @@ describe('Business Settings API (/api/v1/settings)', () => {
     `)
 
     const sOwner = await createSession(d1, ownerId, '127.0.0.1', 'Vitest')
-    ownerToken = sOwner.session.token
+    ownerToken = sOwner.token
 
     const sCashier = await createSession(d1, cashierId, '127.0.0.1', 'Vitest')
-    cashierToken = sCashier.session.token
+    cashierToken = sCashier.token
   })
 
   it('GET /api/v1/settings fetches configuration and auto-initializes defaults', async () => {

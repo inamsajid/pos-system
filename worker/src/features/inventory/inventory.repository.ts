@@ -101,14 +101,16 @@ export class InventoryRepository {
     const conditions: string[] = ['ib.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('ib.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`ib.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -184,10 +186,11 @@ export class InventoryRepository {
     productId: string,
     authorizedBranchIds: string[]
   ): Promise<InventoryBalanceDTO[]> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND ib.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return []
+    }
+
+    const branchFilter = `AND ib.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT ib.*, p.name as product_name, p.sku, p.barcode, p.unit, p.purchase_price_minor, p.low_stock_threshold as min_stock_level,
@@ -213,14 +216,16 @@ export class InventoryRepository {
     const conditions: string[] = ['sm.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('sm.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`sm.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -299,14 +304,16 @@ export class InventoryRepository {
     const conditions: string[] = ['sc.business_id = ?']
     const bindings: (string | number)[] = [businessId]
 
-    if (filters.branchId) {
-      if (authorizedBranchIds.length > 0 && !authorizedBranchIds.includes(filters.branchId)) {
+    if (authorizedBranchIds.length === 0) {
+      conditions.push('1 = 0')
+    } else if (filters.branchId) {
+      if (!authorizedBranchIds.includes(filters.branchId)) {
         conditions.push('1 = 0')
       } else {
         conditions.push('sc.branch_id = ?')
         bindings.push(filters.branchId)
       }
-    } else if (authorizedBranchIds.length > 0) {
+    } else {
       const placeholders = authorizedBranchIds.map(() => '?').join(', ')
       conditions.push(`sc.branch_id IN (${placeholders})`)
       bindings.push(...authorizedBranchIds)
@@ -362,10 +369,11 @@ export class InventoryRepository {
     countId: string,
     authorizedBranchIds: string[]
   ): Promise<StockCountDTO | null> {
-    const branchFilter =
-      authorizedBranchIds.length > 0
-        ? `AND sc.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
-        : ''
+    if (authorizedBranchIds.length === 0) {
+      return null
+    }
+
+    const branchFilter = `AND sc.branch_id IN (${authorizedBranchIds.map(() => '?').join(', ')})`
 
     const query = `
       SELECT sc.*, b.name as branch_name, u1.name as creator_name, u2.name as confirmer_name
