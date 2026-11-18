@@ -64,7 +64,23 @@ export async function handleBootstrap(ctx: RequestContext): Promise<Response> {
     throw HttpError.conflict('Bootstrap already completed. System has already been initialized.')
   }
 
-  // 2. Validate payload
+  // 2. Authorize bootstrap execution via secure one-time token
+  const requiredToken = ctx.env.BOOTSTRAP_TOKEN
+  if (requiredToken) {
+    const providedToken =
+      ctx.req.headers.get('X-Bootstrap-Token')?.trim() ||
+      (ctx.req.headers.get('Authorization')?.startsWith('Bearer ')
+        ? ctx.req.headers.get('Authorization')?.slice(7).trim()
+        : null)
+
+    if (!providedToken || providedToken !== requiredToken) {
+      throw HttpError.unauthorized('Bootstrap authorization failed: Invalid or missing bootstrap token.')
+    }
+  } else if (ctx.env.ENVIRONMENT === 'production' || ctx.env.ENVIRONMENT === 'staging') {
+    throw HttpError.forbidden('Bootstrap is locked: BOOTSTRAP_TOKEN secret must be configured in staging/production.')
+  }
+
+  // 3. Validate payload
   const body = await parseJsonBody<BootstrapPayload>(ctx.req)
   if (!body.email || typeof body.email !== 'string' || !body.email.includes('@')) {
     throw HttpError.badRequest('A valid email address is required.')

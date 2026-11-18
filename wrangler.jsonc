@@ -3,15 +3,15 @@
   "name": "pos-system-worker",
   "main": "worker/src/index.ts",
   "compatibility_date": "2026-11-01",
-  "compatibility_flags": ["nodejs_compat"],
-
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "vars": {
     "ENVIRONMENT": "local",
     "TIMEZONE": "Asia/Karachi",
     "SERVICE_NAME": "pos-system-api",
     "API_VERSION": "v1"
   },
-
   "d1_databases": [
     {
       "binding": "DB",
@@ -20,14 +20,12 @@
       "migrations_dir": "worker/migrations"
     }
   ],
-
   "r2_buckets": [
     {
       "binding": "FILES",
       "bucket_name": "pos-system-local-files"
     }
   ],
-
   "env": {
     "staging": {
       "name": "pos-system-worker-staging",
@@ -35,13 +33,14 @@
         "ENVIRONMENT": "staging",
         "TIMEZONE": "Asia/Karachi",
         "SERVICE_NAME": "pos-system-api-staging",
-        "API_VERSION": "v1"
+        "API_VERSION": "v1",
+        "ALLOWED_ORIGINS": "https://staging.pos-system-5vu.pages.dev"
       },
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "pos-system-staging-d1",
-          "database_id": "<STAGING_D1_DATABASE_ID_PLACEHOLDER>",
+          "database_id": "594cc05c-4cd3-4ef9-ab87-cfd47d908f42",
           "migrations_dir": "worker/migrations"
         }
       ],

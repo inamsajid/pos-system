@@ -111,6 +111,79 @@ describe('Production Authentication & Secret Safeguards Regression', () => {
       expect(data.error.message).toContain('Bootstrap already completed')
       expect(data.error.code).toBe('CONFLICT')
     })
+
+    it('fails closed with 403 Forbidden in staging/production when BOOTSTRAP_TOKEN is missing', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, env, executionCtx)
+      expect(res.status).toBe(403)
+      const data = await res.json() as { error: { message: string; code: string } }
+      expect(data.error.message).toContain('BOOTSTRAP_TOKEN')
+    })
+
+    it('rejects with 401 Unauthorized when BOOTSTRAP_TOKEN is configured but token is invalid or missing', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const envWithToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: 'secret-bootstrap-token-64-hex',
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bootstrap-Token': 'wrong-token',
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(401)
+      const data = await res.json() as { error: { message: string; code: string } }
+      expect(data.error.message).toContain('Invalid or missing bootstrap token')
+    })
+
+    it('succeeds when BOOTSTRAP_TOKEN is configured and valid X-Bootstrap-Token is provided', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const secretToken = 'secret-bootstrap-token-64-hex'
+      const envWithToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: secretToken,
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bootstrap-Token': secretToken,
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(201)
+      const data = await res.json() as { success: boolean; data: { user: { email: string } } }
+      expect(data.success).toBe(true)
+      expect(data.data.user.email).toBe('admin@staging.com')
+    })
   })
 
   // 2. AUTH_SECRET Failure Modes and Fail-Closed Verification

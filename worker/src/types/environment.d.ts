@@ -8,4 +8,5 @@ export interface Env {
   AUTH_SECRET?: string
   ALLOWED_ORIGINS?: string
   PBKDF2_ITERATIONS?: string
+  BOOTSTRAP_TOKEN?: string
 }
