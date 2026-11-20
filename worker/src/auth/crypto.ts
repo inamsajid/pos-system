@@ -25,7 +25,7 @@ function hexToBuffer(hex: string): Uint8Array {
 /**
  * Constant-time byte array comparison to protect against timing attacks.
  */
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
+export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) {
     return false
   }
@@ -34,6 +34,37 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
     diff |= a[i] ^ b[i]
   }
   return diff === 0
+}
+
+/**
+ * Constant-time comparison of two strings via SHA-256 digests.
+ * Hashing to fixed 32-byte digests guarantees zero length leakage and timing side-channels.
+ */
+export async function timingSafeTokenEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder()
+  const [hashA, hashB] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ])
+  return timingSafeEqual(new Uint8Array(hashA), new Uint8Array(hashB))
+}
+
+/**
+ * Normalizes a secret or token by trimming whitespace, newlines (\r, \n),
+ * and stripping matching surrounding double or single quotes if present.
+ */
+export function normalizeSecretToken(token: string | null | undefined): string | null {
+  if (!token || typeof token !== 'string') {
+    return null
+  }
+  let trimmed = token.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+  ) {
+    trimmed = trimmed.slice(1, -1).trim()
+  }
+  return trimmed.length > 0 ? trimmed : null
 }
 
 /**

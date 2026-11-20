@@ -7,6 +7,8 @@ import {
   verifyPassword,
   generateId,
   needsRehash,
+  timingSafeTokenEqual,
+  normalizeSecretToken,
 } from '../auth/crypto'
 import {
   createSession,
@@ -65,15 +67,19 @@ export async function handleBootstrap(ctx: RequestContext): Promise<Response> {
   }
 
   // 2. Authorize bootstrap execution via secure one-time token
-  const requiredToken = ctx.env.BOOTSTRAP_TOKEN
+  const requiredToken = normalizeSecretToken(ctx.env.BOOTSTRAP_TOKEN)
   if (requiredToken) {
-    const providedToken =
-      ctx.req.headers.get('X-Bootstrap-Token')?.trim() ||
-      (ctx.req.headers.get('Authorization')?.startsWith('Bearer ')
-        ? ctx.req.headers.get('Authorization')?.slice(7).trim()
-        : null)
+    const rawHeader = ctx.req.headers.get('X-Bootstrap-Token')
+    const rawAuth = ctx.req.headers.get('Authorization')
+    let providedToken: string | null = null
 
-    if (!providedToken || providedToken !== requiredToken) {
+    if (rawHeader) {
+      providedToken = normalizeSecretToken(rawHeader)
+    } else if (rawAuth && /^Bearer\s+/i.test(rawAuth.trim())) {
+      providedToken = normalizeSecretToken(rawAuth.trim().replace(/^Bearer\s+/i, ''))
+    }
+
+    if (!providedToken || !(await timingSafeTokenEqual(providedToken, requiredToken))) {
       throw HttpError.unauthorized('Bootstrap authorization failed: Invalid or missing bootstrap token.')
     }
   } else if (ctx.env.ENVIRONMENT === 'production' || ctx.env.ENVIRONMENT === 'staging') {

@@ -131,7 +131,32 @@ describe('Production Authentication & Secret Safeguards Regression', () => {
       expect(data.error.message).toContain('BOOTSTRAP_TOKEN')
     })
 
-    it('rejects with 401 Unauthorized when BOOTSTRAP_TOKEN is configured but token is invalid or missing', async () => {
+    it('rejects with 401 Unauthorized when BOOTSTRAP_TOKEN is configured but token header is missing', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const envWithToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: 'secret-bootstrap-token-64-hex',
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(401)
+      const data = await res.json() as { error: { message: string; code: string } }
+      expect(data.error.message).toContain('Invalid or missing bootstrap token')
+    })
+
+    it('rejects with 401 Unauthorized when BOOTSTRAP_TOKEN is configured but token is invalid', async () => {
       sqlite.exec('DELETE FROM users;')
       const envWithToken: Env = {
         ...env,
@@ -179,6 +204,120 @@ describe('Production Authentication & Secret Safeguards Regression', () => {
       })
 
       const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(201)
+      const data = await res.json() as { success: boolean; data: { user: { email: string } } }
+      expect(data.success).toBe(true)
+      expect(data.data.user.email).toBe('admin@staging.com')
+    })
+
+    it('succeeds when BOOTSTRAP_TOKEN is configured and valid Authorization Bearer header is provided', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const secretToken = 'secret-bootstrap-token-64-hex'
+      const envWithToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: secretToken,
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${secretToken}`,
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(201)
+      const data = await res.json() as { success: boolean; data: { user: { email: string } } }
+      expect(data.success).toBe(true)
+      expect(data.data.user.email).toBe('admin@staging.com')
+    })
+
+    it('succeeds when Authorization header uses lowercase bearer scheme and extra whitespace', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const secretToken = 'secret-bootstrap-token-64-hex'
+      const envWithToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: secretToken,
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `bearer   ${secretToken}  `,
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithToken, executionCtx)
+      expect(res.status).toBe(201)
+      const data = await res.json() as { success: boolean; data: { user: { email: string } } }
+      expect(data.success).toBe(true)
+      expect(data.data.user.email).toBe('admin@staging.com')
+    })
+
+    it('succeeds when BOOTSTRAP_TOKEN secret has trailing CRLF / whitespace from wrangler secret put', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const cleanToken = 'secret-bootstrap-token-64-hex'
+      // Simulating secret piped or entered in PowerShell with \r\n
+      const envWithDirtyToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: `${cleanToken}\r\n`,
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bootstrap-Token': cleanToken,
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithDirtyToken, executionCtx)
+      expect(res.status).toBe(201)
+      const data = await res.json() as { success: boolean; data: { user: { email: string } } }
+      expect(data.success).toBe(true)
+      expect(data.data.user.email).toBe('admin@staging.com')
+    })
+
+    it('succeeds when BOOTSTRAP_TOKEN or header has surrounding quotes from shell string quoting', async () => {
+      sqlite.exec('DELETE FROM users;')
+      const cleanToken = 'secret-bootstrap-token-64-hex'
+      // Secret stored with quotes, request header sent with quotes or vice versa
+      const envWithQuotedToken: Env = {
+        ...env,
+        BOOTSTRAP_TOKEN: `"${cleanToken}"`,
+      }
+      const bootstrapReq = new Request('http://localhost/api/v1/auth/bootstrap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bootstrap-Token': `"${cleanToken}"`,
+        },
+        body: JSON.stringify({
+          email: 'admin@staging.com',
+          password: 'Password123!',
+          name: 'Staging Admin',
+          businessName: 'Staging Corp',
+        }),
+      })
+
+      const res = await worker.fetch(bootstrapReq, envWithQuotedToken, executionCtx)
       expect(res.status).toBe(201)
       const data = await res.json() as { success: boolean; data: { user: { email: string } } }
       expect(data.success).toBe(true)
